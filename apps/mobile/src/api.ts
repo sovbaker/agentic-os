@@ -167,6 +167,12 @@ export async function fetchLifeMap(): Promise<MiniAppResponse> {
   return (await res.json()) as MiniAppResponse;
 }
 
+export async function fetchPrivacy(): Promise<MiniAppResponse> {
+  const res = await fetch(`${API_URL}/v1/privacy/screen`, { headers: headers() });
+  if (!res.ok) throw new Error(`Экран приватности не загрузился: ${res.status}`);
+  return (await res.json()) as MiniAppResponse;
+}
+
 export async function registerPushToken(token: string): Promise<void> {
   await fetch(`${API_URL}/v1/devices/push-token`, {
     method: 'POST',

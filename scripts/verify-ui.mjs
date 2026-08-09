@@ -75,6 +75,18 @@ async function run(scheme) {
   await page.screenshot({ path: `${OUT}/06-lifemap-${scheme}.png`, fullPage: true });
   await page.goto(`http://localhost:${PORT}/`, { waitUntil: 'networkidle' });
 
+  console.log(`[${scheme}] данные и приватность`);
+  await page.getByText('Данные и приватность').click();
+  await page.getByText('Что я о тебе храню').waitFor({ timeout: 15_000 });
+  check('экран приватности открывается', await page.getByText('Что я о тебе храню').isVisible());
+  // Обещание «недоверенное лежит отдельно» должно быть видно пользователю,
+  // а не только в архитектурной схеме.
+  check('карантин показан отдельно', await page.getByText('Недоверенное — отдельно').isVisible());
+  check('расход показан в рублях', await page.getByText('Потрачено на модели').isVisible());
+  check('удаление доступно', await page.getByText('Удалить все мои данные').isVisible());
+  await page.screenshot({ path: `${OUT}/07-privacy-${scheme}.png`, fullPage: true });
+  await page.goto(`http://localhost:${PORT}/`, { waitUntil: 'networkidle' });
+
   console.log(`[${scheme}] фраза → мини-аппа`);
   await page.getByText('Надо оформить визу в Италию к октябрю').click();
   await page.getByText('Виза: Италия', { exact: false }).waitFor({ timeout: 20_000 });

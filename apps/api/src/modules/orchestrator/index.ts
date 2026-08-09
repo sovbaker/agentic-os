@@ -3,8 +3,10 @@ import { log, traced } from '../../obs/log';
 import { createJob, getJob, setStatus } from '../jobs/store';
 import { runJobToCompletion } from '../jobs/runner';
 import { stream } from '../jobs/bus';
+import { checkQuota } from '../billing/quota';
 import { ingestFacts, recordEpisode } from '../memory/graph';
-import { fillMissingParams } from '../memory/retrieval';
+import { fillMissingParams, renderContext } from '../memory/retrieval';
+import { recordCase } from '../evals/recorder';
 import { createLlm, type LlmPort } from './llm';
 import { LlmPlanner, planContextOf, type PlannerPort } from './planner';
 
@@ -42,7 +44,16 @@ export async function* handleTurn(input: TurnInput): AsyncGenerator<TurnEvent> {
 
   yield { type: 'status', phase: 'routing', text: 'Понимаю запрос…' };
 
-  const route = await traced('orchestrator.route', () => llm.route(text), { llm: llm.name });
+  /**
+   * Персональный контекст достаём один раз на ход и передаём во все роли:
+   * так он остаётся одним и тем же префиксом и попадает в кэш промпта.
+   * Разный контекст у роутера и планировщика означал бы два холодных
+   * запроса вместо одного тёплого.
+   */
+  const context = await renderContext(userId, text);
+  const callCtx = { userId, context };
+
+  const route = await traced('orchestrator.route', () => llm.route(text, callCtx), { llm: llm.name });
   log.info('routed', { family: route.family, intent: route.intent, confidence: route.confidence });
 
   if (route.intent === 'chitchat') {
@@ -63,6 +74,18 @@ export async function* handleTurn(input: TurnInput): AsyncGenerator<TurnEvent> {
     }
   }
 
+  /**
+   * Лимит проверяется здесь, а не глубже: до этой точки ход ещё ничего не
+   * стоил, а после неё создаётся задача. Отказ должен быть понятен и не
+   * выглядеть поломкой — поэтому это обычное сообщение, а не ошибка.
+   */
+  const quota = await checkQuota(userId, 'task');
+  if (!quota.allowed) {
+    yield { type: 'message', text: quota.reason ?? 'Лимит тарифа исчерпан.' };
+    yield { type: 'done', jobId: null };
+    return;
+  }
+
   yield { type: 'status', phase: 'planning', text: 'Собираю план…' };
 
   /**
@@ -75,8 +98,8 @@ export async function* handleTurn(input: TurnInput): AsyncGenerator<TurnEvent> {
     yield { type: 'status', phase: 'memory', text: `Помню по прошлым разговорам — ${recalled.join(', ')}` };
   }
 
-  const context = planContextOf({ ...route, params }, locale);
-  const plan = await traced('orchestrator.plan', () => planner.plan(context), {
+  const planCtx = planContextOf({ ...route, params }, locale, callCtx);
+  const plan = await traced('orchestrator.plan', () => planner.plan(planCtx), {
     planner: planner.name,
   });
 
@@ -84,13 +107,17 @@ export async function* handleTurn(input: TurnInput): AsyncGenerator<TurnEvent> {
   log.info('job created', { jobId: job.id, steps: plan.length });
   yield { type: 'job', job };
 
+  // Заготовка примера для golden set. Пишется только при явно включённой
+  // записи и содержит то, что модель решила, — размечать всё равно человеку.
+  void recordCase({ text, locale, route: { ...route, params }, plan, jobId: job.id });
+
   /**
    * Память наполняется параллельно исполнению и не блокирует выдачу:
    * граф — побочный продукт использования, а не предусловие для него.
    */
   void (async () => {
     try {
-      const facts = await llm.extractFacts(text);
+      const facts = await llm.extractFacts(text, { ...callCtx, jobId: job.id });
       const written = await ingestFacts(userId, facts, 'user_said', `job:${job.id}`);
       await recordEpisode(userId, 'turn', { text, family: route.family, facts: written }, job.id);
     } catch (err) {

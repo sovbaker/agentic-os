@@ -20,6 +20,7 @@ import {
   fetchFeed,
   fetchLifeMap,
   fetchOnboarding,
+  fetchPrivacy,
   registerDevice,
   registerPushToken,
   setToken,
@@ -296,6 +297,14 @@ export default function App(): React.JSX.Element {
                   .then((map) => {
                     setSpec(map.spec);
                     setData(map.data);
+                  })
+                  .catch((err: unknown) => setError((err as Error).message));
+              }}
+              onOpenPrivacy={() => {
+                void fetchPrivacy()
+                  .then((screen) => {
+                    setSpec(screen.spec);
+                    setData(screen.data);
                   })
                   .catch((err: unknown) => setError((err as Error).message));
               }}

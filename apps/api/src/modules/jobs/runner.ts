@@ -1,5 +1,6 @@
 import type { Job, JobStep } from '@agentic-os/contracts';
 import { log, traced } from '../../obs/log';
+import { TASK_BUDGET_RUB, withinTaskBudget } from '../billing/quota';
 import { judge } from '../orchestrator/critic';
 import { quarantine } from '../orchestrator/quarantine';
 import { createLlm, type LlmPort } from '../orchestrator/llm';
@@ -401,6 +402,27 @@ export async function runJobToCompletion(jobId: string, maxTicks = 25): Promise<
     if (job.status === 'done' || job.status === 'failed' || job.status === 'cancelled' || job.status === 'waiting_user') {
       return job;
     }
+
+    /**
+     * Бюджет задачи. Проверяется между проходами, а не внутри шага: смысл
+     * в том, чтобы не начать следующий круг, а не в том, чтобы оборвать
+     * уже начатое действие на середине.
+     *
+     * Останавливаемся в `waiting_user`, а не в `failed`: перерасход — это
+     * не ошибка исполнения, а решение, которое принимать человеку.
+     */
+    if (!(await withinTaskBudget(jobId))) {
+      log.warn('задача исчерпала бюджет', { jobId, budgetRub: TASK_BUDGET_RUB });
+      await setStatus(jobId, 'waiting_user', {
+        pendingQuestion: `Задача уже стоила больше ${TASK_BUDGET_RUB} ₽. Продолжать?`,
+      });
+      publish(jobId, {
+        type: 'message',
+        text: `Задача оказалась дороже обычного — остановился, чтобы спросить. Продолжать?`,
+      });
+      return getJob(jobId);
+    }
+
     await advanceJob(job, workerId);
   }
   return getJob(jobId);

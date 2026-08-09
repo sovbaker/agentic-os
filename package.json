@@ -13,6 +13,8 @@
     "db:migrate": "npm run migrate -w @agentic-os/api",
     "dev:api": "npm run dev -w @agentic-os/api",
     "dev:mobile": "npm run start -w @agentic-os/mobile",
+    "evals": "tsx apps/api/src/modules/evals/cli.ts",
+    "metrics": "tsx apps/api/src/modules/metrics/cli.ts",
     "verify:ui": "node scripts/verify-ui.mjs",
     "build:web": "npm run export:web -w @agentic-os/mobile"
   },

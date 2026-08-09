@@ -1,5 +1,6 @@
 import { query, queryOne } from '../../db/client';
 import { log } from '../../obs/log';
+import { checkQuota } from '../billing/quota';
 import { calendar } from '../tools/calendar';
 import { DAILY_BUDGET, deliveredToday, markSent, policyFor, score, type EventKind } from './policy';
 import { sendPush } from './push';
@@ -155,6 +156,15 @@ export interface ScoredCandidate extends Candidate {
  * вывалить их пачкой.
  */
 export async function runFor(userId: string, now = new Date()): Promise<ScoredCandidate[]> {
+  /**
+   * Тариф проверяем до сбора поводов, а не после: собирать кандидатов —
+   * это запросы к базе, и делать их ради заведомо пустого результата
+   * незачем. Свои дедлайны пользователь по-прежнему видит в ленте —
+   * платная здесь именно инициатива продукта, а не доступ к своим данным.
+   */
+  const allowed = await checkQuota(userId, 'proactive');
+  if (!allowed.allowed) return [];
+
   const candidates = await collectCandidates(userId, now);
   if (candidates.length === 0) return [];
 

@@ -22,6 +22,11 @@ import { recordReaction, type EventKind } from '../modules/proactive/policy';
 import { ARCHETYPES, applyArchetypes } from '../modules/onboarding/archetypes';
 import { buildLifeMap } from '../modules/onboarding/lifemap';
 import { ensureInboxKey, importIcs, ingestEmail, factsFromCalendar } from '../modules/connectors/inbound';
+import { monthSpendRub } from '../modules/billing/cost';
+import { PLANS, TASK_BUDGET_RUB, checkQuota, getPlan } from '../modules/billing/quota';
+import { deleteUser, exportUser, privacySummary } from '../modules/privacy/index';
+import { buildPrivacyScreen } from '../modules/privacy/screen';
+import * as metrics from '../modules/metrics/index';
 
 export function createApp(): Hono {
   const app = new Hono();
@@ -357,6 +362,84 @@ export function createApp(): Hono {
     const intent = c.req.query('q') ?? '';
     const facts = await retrieve({ userId: user.userId, intent, limit: 10 });
     return c.json({ facts });
+  });
+
+  /* ---------------- тариф, расход, приватность ---------------- */
+
+  app.get('/v1/usage', authMiddleware, async (c) => {
+    const user = c.get('user');
+    const [plan, spent, quota] = await Promise.all([
+      getPlan(user.userId),
+      monthSpendRub(user.userId),
+      checkQuota(user.userId, 'task'),
+    ]);
+
+    return c.json({
+      plan,
+      tasks: { used: quota.used ?? 0, limit: quota.limit ?? null },
+      // Расход показываем самому пользователю в рублях, а не в токенах:
+      // токены — наша единица учёта, а не его.
+      spendRubMonth: Number(spent.toFixed(2)),
+      taskBudgetRub: TASK_BUDGET_RUB,
+      features: { generation: PLANS[plan].generation, proactive: PLANS[plan].proactive },
+    });
+  });
+
+  /**
+   * Экран приватности: что о тебе хранится, одним взглядом.
+   *
+   * Отдельный счётчик у карантина не для красоты — он показывает, что
+   * недоверенный текст лежит отдельно и не смешан с тем, что мы считаем
+   * знанием о пользователе.
+   */
+  app.get('/v1/privacy', authMiddleware, async (c) => {
+    const user = c.get('user');
+    return c.json(await privacySummary(user.userId));
+  });
+
+  /** Тот же экран, но как UISpec: формулировки правятся без релиза. */
+  app.get('/v1/privacy/screen', authMiddleware, async (c) => {
+    const user = c.get('user');
+    return c.json(await buildPrivacyScreen(user.userId));
+  });
+
+  app.get('/v1/privacy/export', authMiddleware, async (c) => {
+    const user = c.get('user');
+    const bundle = await exportUser(user.userId);
+
+    c.header('Content-Disposition', `attachment; filename="agentic-os-export.json"`);
+    return c.json(bundle);
+  });
+
+  /**
+   * Удаление. Требует явного подтверждения в теле запроса: необратимое
+   * действие не должно срабатывать от случайного POST — это ровно тот
+   * случай, ради которого в продукте вообще есть подтверждения.
+   */
+  app.post('/v1/privacy/delete', authMiddleware, async (c) => {
+    const user = c.get('user');
+    const body = (await c.req.json().catch(() => ({}))) as { confirm?: unknown };
+    if (body.confirm !== true) {
+      return c.json({ error: 'Нужно подтверждение: {"confirm": true}', code: 'confirmation_required' }, 400);
+    }
+
+    const result = await deleteUser(user.userId);
+    return c.json(result, result.deleted ? 200 : 404);
+  });
+
+  /* ---------------- продуктовые метрики ---------------- */
+
+  /**
+   * Данные по всем пользователям, поэтому за отдельным токеном, а не за
+   * пользовательской сессией. Без токена в окружении ручка не существует:
+   * забытая переменная не должна оборачиваться открытой аналитикой.
+   */
+  app.get('/v1/metrics', async (c) => {
+    const token = process.env['METRICS_TOKEN'];
+    if (!token || c.req.header('x-metrics-token') !== token) {
+      return c.json({ error: 'Нет доступа', code: 'unauthorized' }, 401);
+    }
+    return c.json(await metrics.snapshot());
   });
 
   return app;

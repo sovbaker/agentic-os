@@ -32,6 +32,7 @@ export interface HomeScreenProps {
   onCard: (card: FeedCard) => void;
   onToggleArchetype: (id: string) => void;
   onOpenLifeMap: () => void;
+  onOpenPrivacy: () => void;
 }
 
 export function HomeScreen({
@@ -46,6 +47,7 @@ export function HomeScreen({
   onCard,
   onToggleArchetype,
   onOpenLifeMap,
+  onOpenPrivacy,
 }: HomeScreenProps): React.JSX.Element {
   const empty = cards.length === 0;
 
@@ -157,9 +159,19 @@ export function HomeScreen({
         </View>
       ) : null}
 
-      <Pressable onPress={onOpenLifeMap}>
-        <Text style={{ color: theme.colors.accent, fontSize: theme.font.small }}>Что я о тебе знаю →</Text>
-      </Pressable>
+      <View style={{ flexDirection: 'row', gap: theme.spacing(4) }}>
+        <Pressable onPress={onOpenLifeMap}>
+          <Text style={{ color: theme.colors.accent, fontSize: theme.font.small }}>Что я о тебе знаю →</Text>
+        </Pressable>
+        {/*
+          Приватность — на главном экране, а не в третьем уровне настроек.
+          В продукте, который просит доступ ко всей жизни, «где посмотреть,
+          что вы обо мне храните» — вопрос первой недели, а не десятой.
+        */}
+        <Pressable onPress={onOpenPrivacy}>
+          <Text style={{ color: theme.colors.textMuted, fontSize: theme.font.small }}>Данные и приватность →</Text>
+        </Pressable>
+      </View>
 
       {inboxAddress ? (
         <View style={{ gap: 4 }}>

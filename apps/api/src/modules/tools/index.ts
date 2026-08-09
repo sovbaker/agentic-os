@@ -1,6 +1,8 @@
 import type { PermissionClass, ToolManifest, UISpec } from '@agentic-os/contracts';
 import { query, queryOne, transaction } from '../../db/client';
 import type { ExtractedFact } from '../orchestrator/llm';
+import { checkQuota } from '../billing/quota';
+import { deleteUser, exportUser } from '../privacy/index';
 import { compose } from '../miniapps/compose';
 import { createLlm } from '../orchestrator/llm';
 import type { JobFamily } from '../orchestrator/llm';
@@ -405,6 +407,13 @@ const miniappCompose: Tool = {
     internal: true,
   },
   async exec(ctx, args) {
+    /**
+     * Генерация — платная возможность, но отказ в ней не оставляет
+     * пользователя без экрана: без адаптера модели компилятор доходит до
+     * каталога и эвристики, а те покрывают все пять семейств клина.
+     */
+    const mayGenerate = await checkQuota(ctx.userId, 'generation');
+
     const result = await compose(
       {
         family: str(args['family'], 'other') as JobFamily,
@@ -412,7 +421,7 @@ const miniappCompose: Tool = {
         params: (args['params'] as Record<string, string>) ?? {},
         locale: str(args['locale'], 'ru-RU'),
       },
-      { llm }
+      mayGenerate.allowed ? { llm } : undefined
     );
 
     const { spec, data } = result;
@@ -556,8 +565,76 @@ const prepareHandoff: Tool = {
 };
 
 /* ------------------------------------------------------------------ */
+/* Приватность                                                         */
+/* ------------------------------------------------------------------ */
+
+/**
+ * Выгрузка. Инструмент не отдаёт сам файл — он готовит его и говорит, где
+ * забрать: тащить весь архив жизни через ответ на нажатие кнопки означало бы
+ * держать его в памяти клиента без нужды.
+ */
+const privacyExport: Tool = {
+  manifest: {
+    name: 'privacy.export',
+    description: 'Собрать выгрузку всех данных пользователя',
+    inputSchema: {},
+    permission: 'auto',
+    returnsUntrusted: false,
+    costHint: 'cheap',
+    timeoutMs: 30_000,
+    source: 'builtin',
+  },
+  async exec(ctx) {
+    const bundle = await exportUser(ctx.userId);
+    const total = Object.values(bundle.summary).reduce((s, n) => s + n, 0);
+
+    return {
+      ok: true,
+      message: `Готово: ${total} записей. Забрать — GET /v1/privacy/export`,
+      audit: {
+        humanReadable: 'Собрал выгрузку твоих данных',
+        reason: 'Запрос на экспорт с экрана приватности',
+        reversible: false,
+      },
+    };
+  },
+};
+
+/**
+ * Удаление. Класс прав `confirm` — не перестраховка: это единственное
+ * действие в продукте, которое нечем компенсировать. Текст подтверждения
+ * пишет сервер, потому что клиенту тут доверять нельзя.
+ */
+const privacyDelete: Tool = {
+  manifest: {
+    name: 'privacy.delete',
+    description: 'Удалить все данные пользователя без возможности восстановления',
+    inputSchema: {},
+    permission: 'confirm',
+    returnsUntrusted: false,
+    costHint: 'cheap',
+    timeoutMs: 30_000,
+    source: 'builtin',
+  },
+  async exec(ctx) {
+    const result = await deleteUser(ctx.userId);
+    return {
+      ok: result.deleted,
+      message: result.deleted ? 'Всё удалено. Спасибо, что попробовал.' : 'Данные уже удалены',
+      audit: {
+        humanReadable: 'Удалил все твои данные',
+        reason: 'Запрос на удаление с экрана приватности',
+        reversible: false,
+      },
+    };
+  },
+};
+
+/* ------------------------------------------------------------------ */
 
 const TOOL_LIST: readonly Tool[] = [
+  privacyExport,
+  privacyDelete,
   toggleItem,
   scheduleReminder,
   sendTestNotification,

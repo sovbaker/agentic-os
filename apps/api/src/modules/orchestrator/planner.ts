@@ -1,7 +1,7 @@
 import { log } from '../../obs/log';
 import type { PlanStep } from '../jobs/store';
 import { KNOWN_TOOLS, PLANNABLE_TOOLS } from '../tools/index';
-import type { JobFamily, LlmPort, RouteResult } from './llm';
+import type { JobFamily, LlmCallContext, LlmPort, RouteResult } from './llm';
 
 /**
  * Планировщик.
@@ -27,6 +27,8 @@ export interface PlanContext {
   family: JobFamily;
   params: Record<string, string>;
   locale: string;
+  /** Кому записать расход и какой персональный контекст приложить. */
+  call?: LlmCallContext | undefined;
 }
 
 function searchQuery(ctx: PlanContext): string {
@@ -165,7 +167,8 @@ export class LlmPlanner implements PlannerPort {
     const catalogue = PLANNABLE_TOOLS.map((t) => `${t.name} — ${t.description}`).join('\n');
     const raw = await this.llm.plan(
       PLAN_SYSTEM,
-      `Цель: ${ctx.goal}\n\nДоступные инструменты:\n${catalogue}`
+      `Цель: ${ctx.goal}\n\nДоступные инструменты:\n${catalogue}`,
+      { ...ctx.call, role: 'planner' }
     );
 
     const validated = validatePlan(raw);
@@ -177,8 +180,12 @@ export class LlmPlanner implements PlannerPort {
   }
 }
 
-export function planContextOf(route: RouteResult, locale: string): PlanContext {
-  return { goal: route.goal, family: route.family, params: route.params, locale };
+export function planContextOf(
+  route: RouteResult,
+  locale: string,
+  call?: LlmCallContext
+): PlanContext {
+  return { goal: route.goal, family: route.family, params: route.params, locale, call };
 }
 
 export { templatePlan, validatePlan };
