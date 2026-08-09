@@ -1,85 +1,40 @@
-import type { TurnEvent, UISpec } from '@agentic-os/contracts';
-import { query } from '../../db/client';
+import type { TurnEvent } from '@agentic-os/contracts';
 import { log, traced } from '../../obs/log';
-import { selectEntry } from '../miniapps/catalog';
-import { validateSpec } from '../miniapps/validate';
-import { KNOWN_TOOLS } from '../tools/index';
-import { createJob } from '../jobs/store';
+import { createJob, getJob, setStatus } from '../jobs/store';
+import { runJobToCompletion } from '../jobs/runner';
+import { stream } from '../jobs/bus';
 import { ingestFacts, recordEpisode } from '../memory/graph';
+import { fillMissingParams } from '../memory/retrieval';
 import { createLlm, type LlmPort } from './llm';
+import { LlmPlanner, planContextOf, type PlannerPort } from './planner';
 
 /**
  * Оркестратор хода разговора.
  *
- * В S0 роли ещё слиты в один проход — это осознанно: контур сначала должен
- * заработать end-to-end. Разделение на роутер → планировщик → исполнители →
- * критик приходит в S1, и границы уже расставлены так, чтобы это было
- * расширением, а не переписыванием.
+ * Роли разделены: роутер определяет намерение, планировщик строит план
+ * (без инструментов), исполнитель выполняет шаги (узкий набор инструментов
+ * на шаг), критик проверяет постусловия. Здесь они только связываются.
  *
- * Порядок событий подчинён воспринимаемой задержке: экран уходит клиенту
- * раньше, чем мы начинаем возиться с памятью.
+ * Порядок подчинён воспринимаемой задержке: экран уходит клиенту первым
+ * шагом плана, а обогащение доезжает следом.
  */
 
 const llm: LlmPort = createLlm();
+const planner: PlannerPort = new LlmPlanner(llm);
 
-/** Экран, который показываем, если сгенерированная мини-аппа не прошла валидацию. */
-function fallbackSpec(goal: string): UISpec {
-  return {
-    schemaVersion: '1.0',
-    id: 'fallback',
-    version: 1,
-    title: 'Задача принята',
-    dataSources: [],
-    meta: { origin: 'catalog', graphRefs: [], shareable: false },
-    root: {
-      type: 'screen',
-      props: { title: 'Задача принята' },
-      children: [
-        {
-          type: 'card',
-          children: [
-            { type: 'heading', props: { text: goal.slice(0, 90), level: 1 } },
-            {
-              type: 'text',
-              props: {
-                text: 'Взял в работу. Экран под эту задачу пока собрать не удалось — вернусь с результатом.',
-                tone: 'muted',
-              },
-            },
-          ],
-        },
-      ],
-    },
-  };
-}
-
-async function persistMiniApp(
-  userId: string,
-  spec: UISpec,
-  data: Record<string, unknown>
-): Promise<void> {
-  await query(
-    `INSERT INTO miniapp (id, version, user_id, title, origin, spec)
-     VALUES ($1, $2, $3, $4, $5, $6)
-     ON CONFLICT (id, version) DO NOTHING`,
-    [spec.id, spec.version, null, spec.title, spec.meta.origin, JSON.stringify(spec)]
-  );
-
-  // Состояние мини-аппы принадлежит пользователю и переживает перезапуск:
-  // «Ремонт кухни» через месяц должен помнить, что было.
-  await query(
-    `INSERT INTO miniapp_state (user_id, spec_id, data)
-     VALUES ($1, $2, $3)
-     ON CONFLICT (user_id, spec_id) DO NOTHING`,
-    [userId, spec.id, JSON.stringify(data)]
-  );
-}
+/**
+ * Сколько держим SSE открытым. Дальше задача продолжается в фоне —
+ * пользователь узнает о результате из пуша (S3) или увидит в списке задач.
+ */
+const STREAM_BUDGET_MS = 25_000;
 
 export interface TurnInput {
   userId: string;
   text: string;
   source: 'text' | 'voice';
   locale: string;
+  /** Ответ на вопрос агента по существующей задаче. */
+  jobId?: string | undefined;
 }
 
 export async function* handleTurn(input: TurnInput): AsyncGenerator<TurnEvent> {
@@ -96,49 +51,93 @@ export async function* handleTurn(input: TurnInput): AsyncGenerator<TurnEvent> {
     return;
   }
 
+  // Ответ на вопрос агента продолжает существующую задачу, а не плодит новую.
+  if (input.jobId) {
+    const existing = await getJob(input.jobId, userId);
+    if (existing && existing.status === 'waiting_user') {
+      await setStatus(existing.id, 'running', { pendingQuestion: null });
+      await recordEpisode(userId, 'answer', { text, jobId: existing.id }, existing.id);
+      yield { type: 'status', phase: 'resuming', text: 'Продолжаю задачу…' };
+      yield* runAndStream(existing.id);
+      return;
+    }
+  }
+
   yield { type: 'status', phase: 'planning', text: 'Собираю план…' };
 
-  const job = await createJob({ userId, goal: route.goal, status: 'running' });
+  /**
+   * Достаём из графа то, чего не хватает в запросе. «Оформи визу» без страны
+   * работает, если пользователь называл её раньше — это и есть накопительный
+   * эффект, ради которого нужна память.
+   */
+  const { params, recalled } = await fillMissingParams(userId, route.goal, route.params);
+  if (recalled.length > 0) {
+    yield { type: 'status', phase: 'memory', text: `Помню по прошлым разговорам — ${recalled.join(', ')}` };
+  }
+
+  const context = planContextOf({ ...route, params }, locale);
+  const plan = await traced('orchestrator.plan', () => planner.plan(context), {
+    planner: planner.name,
+  });
+
+  const job = await createJob({ userId, goal: route.goal, plan, status: 'running' });
+  log.info('job created', { jobId: job.id, steps: plan.length });
   yield { type: 'job', job };
 
-  const entry = selectEntry(route.family);
-  const params = { goal: route.goal, params: route.params, locale };
+  /**
+   * Память наполняется параллельно исполнению и не блокирует выдачу:
+   * граф — побочный продукт использования, а не предусловие для него.
+   */
+  void (async () => {
+    try {
+      const facts = await llm.extractFacts(text);
+      const written = await ingestFacts(userId, facts, 'user_said', `job:${job.id}`);
+      await recordEpisode(userId, 'turn', { text, family: route.family, facts: written }, job.id);
+    } catch (err) {
+      // Сбой памяти не должен ломать выданный результат.
+      log.error('fact ingestion failed', { error: (err as Error).message });
+    }
+  })();
 
-  let spec = entry.build(params);
-  const data = entry.data(params);
+  yield* runAndStream(job.id);
+}
 
-  // Каталожные аппы проходят ту же валидацию, что и сгенерированные:
-  // единственный способ не узнать о сломанном экране от пользователя.
-  const validation = validateSpec(spec, { knownTools: KNOWN_TOOLS });
-  if (!validation.ok) {
-    log.error('catalog spec failed validation', {
-      specId: spec.id,
-      errors: validation.errors,
-      budget: validation.budgetExceeded,
+/**
+ * Запускает задачу и отдаёт её события клиенту.
+ *
+ * Исполнение живёт своей жизнью: если пользователь закроет экран, задача
+ * продолжится. Поток — способ подсмотреть, а не условие работы.
+ */
+async function* runAndStream(jobId: string): AsyncGenerator<TurnEvent> {
+  const signal = { done: false };
+
+  const execution = runJobToCompletion(jobId)
+    .catch((err: unknown) => {
+      log.error('исполнение задачи упало', { jobId, error: (err as Error).message });
+      return null;
+    })
+    .finally(() => {
+      signal.done = true;
     });
-    spec = fallbackSpec(route.goal);
-  }
 
-  await persistMiniApp(userId, spec, data);
-
-  yield { type: 'spec', spec };
-  for (const [key, value] of Object.entries(data)) {
-    yield { type: 'data', key, value };
-  }
-
-  // Память наполняется после того, как пользователь увидел результат:
-  // граф — побочный продукт использования, а не предусловие для него.
-  yield { type: 'status', phase: 'memory', text: 'Запоминаю контекст…' };
+  const deadline = setTimeout(() => {
+    signal.done = true;
+  }, STREAM_BUDGET_MS);
 
   try {
-    const facts = await traced('orchestrator.extract', () => llm.extractFacts(text));
-    const written = await ingestFacts(userId, facts, 'user_said', `job:${job.id}`);
-    await recordEpisode(userId, 'turn', { text, family: route.family, facts: written }, job.id);
-    log.info('facts ingested', { count: written });
-  } catch (err) {
-    // Сбой памяти не должен ломать выданный результат.
-    log.error('fact ingestion failed', { error: (err as Error).message });
-  }
+    for await (const event of stream(jobId, signal, STREAM_BUDGET_MS)) {
+      yield event;
+      if (event.type === 'done') return;
+    }
 
-  yield { type: 'done', jobId: job.id };
+    // Бюджет потока исчерпан, а задача ещё идёт — честно говорим об этом.
+    const job = await getJob(jobId);
+    if (job && (job.status === 'running' || job.status === 'waiting_world')) {
+      yield { type: 'message', text: 'Продолжаю в фоне — вернусь с результатом.' };
+    }
+    yield { type: 'done', jobId };
+  } finally {
+    clearTimeout(deadline);
+    void execution;
+  }
 }

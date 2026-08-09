@@ -5,6 +5,8 @@ import { migrate, vectorSearchAvailable } from './db/migrate';
 import { close, healthcheck } from './db/client';
 import { log } from './obs/log';
 import { CATALOG } from './modules/miniapps/catalog';
+import { startWorker } from './modules/jobs/runner';
+import { retrievalMode } from './modules/memory/retrieval';
 import { validateSpec } from './modules/miniapps/validate';
 import { KNOWN_TOOLS } from './modules/tools/index';
 
@@ -35,7 +37,15 @@ async function main(): Promise<void> {
 
   await migrate();
   const vector = await vectorSearchAvailable();
+  log.info('режим retrieval', { mode: await retrievalMode() });
   verifyCatalog();
+
+  /**
+   * Воркер живёт в том же процессе, что и API. Он общается с остальным кодом
+   * только через базу, поэтому вынести его в отдельный процесс — механическая
+   * операция, когда одного перестанет хватать.
+   */
+  const stopWorker = startWorker();
 
   const server = serve({ fetch: createApp().fetch, port: config.port }, (info) => {
     log.info('api запущен', {
@@ -48,6 +58,7 @@ async function main(): Promise<void> {
 
   const shutdown = async (signal: string): Promise<void> => {
     log.info(`получен ${signal}, останавливаюсь`);
+    stopWorker();
     server.close();
     await close();
     process.exit(0);

@@ -40,6 +40,12 @@ export interface LlmPort {
    * Инструкции из данных не переживают эту границу.
    */
   extractFacts(text: string): Promise<ExtractedFact[]>;
+  /**
+   * Свободное планирование. Необязательный метод: для известных семейств
+   * задач шаблон предсказуемее и быстрее, модель нужна только там,
+   * где шаблона нет.
+   */
+  plan?(system: string, user: string): Promise<unknown>;
 }
 
 /* ------------------------------------------------------------------ */
@@ -56,7 +62,7 @@ export interface LlmPort {
 const B = '(?<![а-яёa-z])';
 
 const FAMILY_KEYWORDS: Array<{ family: JobFamily; words: RegExp }> = [
-  { family: 'documents', words: new RegExp(`${B}(виз[аыу]|паспорт|страховк|полис|осаго|каско|налог|деклараци|документ|продлить|продлени|срок действия|госпошлин|загран)`, 'i') },
+  { family: 'documents', words: new RegExp(`${B}(виз[аыуое]|паспорт|страховк|полис|осаго|каско|налог|деклараци|документ|продлить|продлени|срок действия|госпошлин|загран)`, 'i') },
   { family: 'travel',    words: new RegExp(`${B}(поездк|путешеств|отпуск|билет|рейс|отел|бронир|командировк|лететь|полет)`, 'i') },
   { family: 'health',    words: new RegExp(`${B}(врач|клиник|анализ|запис[ья]|прививк|зуб|терапевт|стоматолог|диспансер|медсправк|обследован)`, 'i') },
   { family: 'home',      words: new RegExp(`${B}(ремонт|подрядчик|мастер|кухн|потолк|сантехник|электрик|смет|переезд|мебел|квартир)`, 'i') },
@@ -228,6 +234,11 @@ export class AnthropicLlm implements LlmPort {
   async extractFacts(text: string): Promise<ExtractedFact[]> {
     const parsed = await this.json<ExtractedFact[]>(EXTRACT_SYSTEM, text, config.models.router);
     return Array.isArray(parsed) ? parsed : this.fallback.extractFacts(text);
+  }
+
+  /** Планирование — самая сложная роль, поэтому самая сильная модель. */
+  async plan(system: string, user: string): Promise<unknown> {
+    return this.json<unknown>(system, user, config.models.planner);
   }
 }
 
