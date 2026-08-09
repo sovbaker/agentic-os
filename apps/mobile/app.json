@@ -1,0 +1,40 @@
+{
+  "expo": {
+    "name": "Agentic OS",
+    "slug": "agentic-os",
+    "version": "0.1.0",
+    "orientation": "portrait",
+    "icon": "./assets/icon.png",
+    "userInterfaceStyle": "automatic",
+    "scheme": "agenticos",
+    "newArchEnabled": true,
+    "ios": {
+      "supportsTablet": true,
+      "bundleIdentifier": "ru.agenticos.app",
+      "infoPlist": {
+        "NSMicrophoneUsageDescription": "Микрофон нужен, чтобы можно было надиктовать задачу голосом.",
+        "NSSpeechRecognitionUsageDescription": "Распознавание речи нужно, чтобы превратить надиктованную задачу в текст."
+      }
+    },
+    "android": {
+      "package": "ru.agenticos.app",
+      "adaptiveIcon": {
+        "backgroundColor": "#1C1917",
+        "foregroundImage": "./assets/android-icon-foreground.png",
+        "backgroundImage": "./assets/android-icon-background.png",
+        "monochromeImage": "./assets/android-icon-monochrome.png"
+      },
+      "predictiveBackGestureEnabled": false
+    },
+    "web": {
+      "favicon": "./assets/favicon.png",
+      "bundler": "metro"
+    },
+    "plugins": [
+      "expo-dev-client"
+    ],
+    "extra": {
+      "apiUrl": "http://localhost:8787"
+    }
+  }
+}

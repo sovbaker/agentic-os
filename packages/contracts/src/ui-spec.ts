@@ -81,7 +81,8 @@ export const UIAction = z.discriminatedUnion('kind', [
     args: z.record(z.string(), z.union([z.unknown(), DataRef])).default({}),
     /** Текст подтверждения. Обязателен для инструментов класса `confirm`. */
     confirm: z.string().optional(),
-    optimistic: z.boolean().default(false),
+    /** Отсутствие = обычное поведение; необязательно, чтобы спеки было легко писать руками. */
+    optimistic: z.boolean().optional(),
   }),
   /** Навигация внутри приложения. */
   z.object({

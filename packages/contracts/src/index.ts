@@ -6,6 +6,7 @@
  * пакет общий, а не продублированный.
  */
 
-export * from './ui-spec.js';
-export * from './life-graph.js';
-export * from './job.js';
+export * from './ui-spec';
+export * from './life-graph';
+export * from './job';
+export * from './api';

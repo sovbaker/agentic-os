@@ -11,9 +11,33 @@
 | 3 | [Спека MVP](docs/03-mvp-spec.md) | Позиционирование, клин, скоуп, метрики, монетизация, гипотезы |
 | 4 | [Архитектура](docs/04-architecture.md) | Схемы, стек, модель данных, безопасность, бюджеты |
 | 5 | [Холодный старт life graph](docs/05-cold-start-lifegraph.md) | Как наполнить граф, не убив онбординг |
-| 6 | [Дорожная карта](docs/06-roadmap.md) | 12 недель, гейты, порядок решений |
+| 6 | [Дорожная карта](docs/06-roadmap.md) | Спринты, гейты, порядок решений |
+| 7 | [S0: запуск и статус](docs/07-s0-runbook.md) | Что уже работает и как это поднять |
 
-Контракты (TypeScript + zod, типизируются и парсятся): [`packages/contracts`](packages/contracts/src)
+## Статус: S0 сделан
+
+Сквозной контур **«сказал → на телефоне серверный UISpec»** работает и проверен.
+
+```bash
+npm install && npm run db:migrate
+npm run dev:api      # :8787
+npm run dev:mobile   # Expo dev client
+
+npm run typecheck    # 4 пакета
+npm test             # 26 тестов
+npm run build:web && npm run verify:ui   # прогон в браузере
+```
+
+Фраза «Надо оформить визу в Италию к октябрю, и я вечно про это забываю» → мини-аппа «Виза: Италия» со сроком, чек-листом и рабочими действиями; в графе — 5 фактов с провенансом. Подробности и найденные баги — в [`docs/07`](docs/07-s0-runbook.md).
+
+### Код
+
+| Что | Где |
+|---|---|
+| Контракты (zod): UISpec, Job, Fact, инструменты, протокол | [`packages/contracts`](packages/contracts/src) |
+| Реестр компонентов и рендерер SDUI | [`packages/ui-registry`](packages/ui-registry/src) |
+| Модульный монолит: оркестратор, память, мини-аппы, инструменты | [`apps/api`](apps/api/src) |
+| Клиент Expo | [`apps/mobile`](apps/mobile) |
 
 ## Суть за одну минуту
 
