@@ -84,6 +84,26 @@ export async function addFact(input: AddFactInput): Promise<{ id: string; supers
       [input.userId, input.subjectId, input.predicate]
     );
 
+    /**
+     * Тот же факт из того же источника — не новое знание, а повторное
+     * наблюдение. Вставлять его заново значит копить дубли: они не меняют
+     * картину мира, но портят retrieval и «карту твоей жизни».
+     */
+    const identical = current.rows.find(
+      (r) => JSON.stringify(r.object_value) === JSON.stringify(input.value ?? null)
+    );
+    if (identical) {
+      await client.query(
+        `UPDATE fact
+            SET observed_at = now(),
+                confidence = GREATEST(confidence, $2::real),
+                source = CASE WHEN $3::text = 'user_said' THEN 'user_said' ELSE source END
+          WHERE id = $1`,
+        [identical.id, input.confidence, input.source]
+      );
+      return { id: identical.id, superseded: null };
+    }
+
     const inserted = await client.query<{ id: string }>(
       `INSERT INTO fact
          (user_id, subject_id, predicate, object_value, source, source_ref, confidence, observed_at, valid_from)

@@ -82,21 +82,38 @@ test('слабый источник не перебивает прямое ут�
   assert.notEqual(guessedRow?.valid_to, null, 'вывод модели не должен становиться текущей правдой');
 });
 
-test('повтор того же значения не плодит подмену', { skip: !hasDb }, async () => {
-  const subject = await upsertEntity(userId, 'thing', 'Машина');
+test('повторное наблюдение обновляет факт, а не плодит дубль', { skip: !hasDb }, async () => {
+  // Повторный скан календаря или второй импорт того же .ics не должны
+  // наполнять граф копиями: они не меняют картину мира, но ломают retrieval.
+  const subject = await upsertEntity(userId, 'recurring', 'Английский');
 
   const first = await addFact({
-    userId, subjectId: subject, predicate: 'owns',
-    value: 'Skoda', source: 'calendar', confidence: 0.6,
+    userId, subjectId: subject, predicate: 'happens_regularly',
+    value: '3', source: 'calendar', confidence: 0.6,
   });
-  const repeat = await addFact({
-    userId, subjectId: subject, predicate: 'owns',
-    value: 'Skoda', source: 'calendar', confidence: 0.6,
+  const second = await addFact({
+    userId, subjectId: subject, predicate: 'happens_regularly',
+    value: '3', source: 'calendar', confidence: 0.6,
   });
 
-  assert.equal(repeat.superseded, null, 'одинаковое значение не должно закрывать предыдущий факт');
-  const rows = await query<{ valid_to: Date | null }>(
-    'SELECT valid_to FROM fact WHERE id = ANY($1)', [[first.id, repeat.id]]
+  assert.equal(second.id, first.id, 'повтор должен вернуть тот же факт');
+
+  const rows = await query(
+    `SELECT id FROM fact WHERE subject_id = $1 AND predicate = 'happens_regularly' AND valid_to IS NULL`,
+    [subject]
   );
-  assert.equal(rows.filter((r) => r.valid_to === null).length, 2, 'оба факта остаются актуальными');
+  assert.equal(rows.length, 1, 'в графе должен остаться ровно один актуальный факт');
+});
+
+test('прямое подтверждение повышает уверенность существующего факта', { skip: !hasDb }, async () => {
+  const subject = await upsertEntity(userId, 'place', 'Дача');
+  await addFact({ userId, subjectId: subject, predicate: 'owns', value: 'да', source: 'inferred', confidence: 0.3 });
+  await addFact({ userId, subjectId: subject, predicate: 'owns', value: 'да', source: 'user_said', confidence: 0.95 });
+
+  const row = await queryOne<{ confidence: number; source: string }>(
+    `SELECT confidence, source FROM fact WHERE subject_id = $1 AND valid_to IS NULL`,
+    [subject]
+  );
+  assert.ok((row?.confidence ?? 0) >= 0.95);
+  assert.equal(row?.source, 'user_said', 'подтверждение пользователя должно перебивать вывод модели');
 });

@@ -467,6 +467,94 @@ const miniappEnrich: Tool = {
   },
 };
 
+
+/* ------------------------------------------------------------------ */
+/* Память и передача                                                   */
+/* ------------------------------------------------------------------ */
+
+/**
+ * Подтверждение факта одним тапом на «карте твоей жизни».
+ * Самая дешёвая разметка, какая бывает: пользователь исправляет то,
+ * что ему и так интересно исправить.
+ */
+const confirmFact: Tool = {
+  manifest: {
+    name: 'memory.confirm_fact',
+    description: 'Подтвердить факт о себе',
+    inputSchema: { factId: 'string' },
+    permission: 'auto',
+    returnsUntrusted: false,
+    costHint: 'free',
+    timeoutMs: 5_000,
+    source: 'builtin',
+  },
+  async exec(ctx, args) {
+    const factId = str(args['factId']);
+    const rows = await query<{ id: string }>(
+      `UPDATE fact SET confidence = 1.0, source = 'user_confirmed', observed_at = now()
+        WHERE id = $1 AND user_id = $2 AND valid_to IS NULL
+        RETURNING id`,
+      [factId, ctx.userId]
+    );
+    if (rows.length === 0) return { ok: false, message: 'факт не найден' };
+
+    return {
+      ok: true,
+      message: 'Запомнил',
+      audit: {
+        humanReadable: 'Подтверждён факт на карте жизни',
+        reason: 'пользователь подтвердил на экране «что я о тебе знаю»',
+        reversible: false,
+      },
+    };
+  },
+};
+
+/**
+ * Ассистированная передача — то, что в MVP занимает место эмулятора.
+ *
+ * Агент делает всю подготовку, последний шаг остаётся за человеком: один тап
+ * по ссылке с уже подставленными параметрами. ~80% ощущаемой ценности при
+ * ~5% риска, без хранения чужих учёток и без нарушения чьих-либо правил.
+ */
+const HANDOFF_TEMPLATES: Record<string, (p: Record<string, string>) => { url: string; fallback?: string; label: string }> = {
+  route: (p) => ({
+    url: `yandexmaps://maps.yandex.ru/?rtext=~${encodeURIComponent(p['to'] ?? '')}&rtt=auto`,
+    fallback: `https://yandex.ru/maps/?rtext=~${encodeURIComponent(p['to'] ?? '')}`,
+    label: `Маршрут: ${p['to'] ?? ''}`.trim(),
+  }),
+  call: (p) => ({ url: `tel:${(p['phone'] ?? '').replace(/[^\d+]/g, '')}`, label: 'Позвонить' }),
+  email: (p) => ({
+    url: `mailto:${p['to'] ?? ''}?subject=${encodeURIComponent(p['subject'] ?? '')}&body=${encodeURIComponent(p['body'] ?? '')}`,
+    label: 'Открыть письмо',
+  }),
+  web: (p) => ({ url: p['url'] ?? '', label: p['label'] ?? 'Открыть' }),
+};
+
+const prepareHandoff: Tool = {
+  manifest: {
+    name: 'handoff.prepare',
+    description: 'Подготовить переход в другое приложение с заполненными данными',
+    inputSchema: { kind: 'string', params: 'object' },
+    permission: 'auto',
+    returnsUntrusted: false,
+    costHint: 'free',
+    timeoutMs: 5_000,
+    source: 'builtin',
+  },
+  async exec(_ctx, args) {
+    const kind = str(args['kind'], 'web');
+    const template = HANDOFF_TEMPLATES[kind];
+    if (!template) return { ok: false, message: `неизвестный тип перехода "${kind}"` };
+
+    const built = template((args['params'] as Record<string, string>) ?? {});
+    if (!built.url) return { ok: false, message: 'не хватает данных для перехода' };
+
+    // Ссылку отдаём как данные: открывает её пользователь, не агент.
+    return { ok: true, dataPatch: { handoff: built } };
+  },
+};
+
 /* ------------------------------------------------------------------ */
 
 const TOOL_LIST: readonly Tool[] = [
@@ -481,6 +569,8 @@ const TOOL_LIST: readonly Tool[] = [
   deleteEvent,
   miniappCompose,
   miniappEnrich,
+  confirmFact,
+  prepareHandoff,
   checklistSource('docs.checklist'),
   checklistSource('trip.checklist'),
   checklistSource('task.checklist'),

@@ -17,6 +17,11 @@ import { getJob, listJobs, stepsOf } from '../modules/jobs/store';
 import { cancelJob } from '../modules/jobs/runner';
 import { snapshot } from '../modules/memory/graph';
 import { retrieve } from '../modules/memory/retrieval';
+import { feed, runFor } from '../modules/proactive/index';
+import { recordReaction, type EventKind } from '../modules/proactive/policy';
+import { ARCHETYPES, applyArchetypes } from '../modules/onboarding/archetypes';
+import { buildLifeMap } from '../modules/onboarding/lifemap';
+import { ensureInboxKey, importIcs, ingestEmail, factsFromCalendar } from '../modules/connectors/inbound';
 
 export function createApp(): Hono {
   const app = new Hono();
@@ -239,6 +244,105 @@ export function createApp(): Hono {
 
     await query('UPDATE audit_log SET reversed_at = now() WHERE id = $1', [id]);
     return c.json({ ok: true, ...(outcome.dataPatch ? { dataPatch: outcome.dataPatch } : {}) });
+  });
+
+  /* ---------------- лента «Сегодня» и проактивность ---------------- */
+
+  app.get('/v1/feed', authMiddleware, async (c) => {
+    const user = c.get('user');
+    return c.json(await feed(user.userId));
+  });
+
+  /** Ручной прогон сканера — для отладки и для эвалов. */
+  app.post('/v1/proactive/run', authMiddleware, async (c) => {
+    const user = c.get('user');
+    return c.json({ delivered: await runFor(user.userId) });
+  });
+
+  app.post('/v1/proactive/:id/reaction', authMiddleware, async (c) => {
+    const user = c.get('user');
+    const id = c.req.param('id');
+    const body = (await c.req.json().catch(() => ({}))) as { reaction?: string };
+    const reaction = body.reaction;
+
+    if (reaction !== 'opened' && reaction !== 'ignored' && reaction !== 'muted_class') {
+      return c.json({ error: 'reaction: opened | ignored | muted_class', code: 'bad_request' }, 400);
+    }
+
+    const row = await queryOne<{ kind: EventKind }>(
+      'UPDATE proactive_event SET reaction = $3 WHERE id = $1 AND user_id = $2 RETURNING kind',
+      [id, user.userId, reaction]
+    );
+    if (!row) return c.json({ error: 'Событие не найдено', code: 'not_found' }, 404);
+
+    // Игнор — сильный сигнал: он обязан снижать частоту этого класса.
+    await recordReaction(user.userId, row.kind, reaction);
+    return c.json({ ok: true });
+  });
+
+  app.post('/v1/devices/push-token', authMiddleware, async (c) => {
+    const user = c.get('user');
+    const body = (await c.req.json().catch(() => ({}))) as { token?: string };
+    if (!body.token) return c.json({ error: 'Нужен token', code: 'bad_request' }, 400);
+
+    await query('UPDATE device SET push_token = $2 WHERE id = $1', [user.deviceId, body.token]);
+    return c.json({ ok: true });
+  });
+
+  /* ---------------- онбординг ---------------- */
+
+  app.get('/v1/onboarding', authMiddleware, async (c) => {
+    const user = c.get('user');
+    const inboxKey = await ensureInboxKey(user.userId);
+    return c.json({
+      archetypes: ARCHETYPES.map((a) => ({ id: a.id, label: a.label, glyph: a.glyph })),
+      // Адрес для пересылки: подключение почты без единой верификации.
+      inboxAddress: `u+${inboxKey}@${process.env['INBOUND_DOMAIN'] ?? 'in.localhost'}`,
+    });
+  });
+
+  app.post('/v1/onboarding/archetypes', authMiddleware, async (c) => {
+    const user = c.get('user');
+    const body = (await c.req.json().catch(() => ({}))) as { ids?: unknown };
+    const ids = Array.isArray(body.ids) ? body.ids.filter((i): i is string => typeof i === 'string') : [];
+
+    return c.json({ ok: true, factsWritten: await applyArchetypes(user.userId, ids) });
+  });
+
+  app.get('/v1/lifemap', authMiddleware, async (c) => {
+    const user = c.get('user');
+    return c.json(await buildLifeMap(user.userId));
+  });
+
+  /* ---------------- входящие данные ---------------- */
+
+  /**
+   * Приём пересланной почты. Аутентификация по общему секрету, а не по
+   * пользователю: письмо приходит от почтового шлюза, а не из приложения.
+   */
+  app.post('/v1/inbound/email', async (c) => {
+    const secret = process.env['INBOUND_SECRET'];
+    if (secret && c.req.header('x-inbound-secret') !== secret) {
+      return c.json({ error: 'Нет доступа', code: 'unauthorized' }, 401);
+    }
+
+    const body = (await c.req.json().catch(() => ({}))) as { to?: string; from?: string; subject?: string; text?: string };
+    if (!body.to || !body.text) return c.json({ error: 'Нужны to и text', code: 'bad_request' }, 400);
+
+    const result = await ingestEmail({ to: body.to, from: body.from, subject: body.subject, text: body.text });
+    return c.json(result, result.accepted ? 200 : 404);
+  });
+
+  app.post('/v1/import/ics', authMiddleware, async (c) => {
+    const user = c.get('user');
+    const source = await c.req.text();
+    if (!source.includes('BEGIN:VEVENT')) {
+      return c.json({ error: 'Это не похоже на .ics', code: 'bad_request' }, 400);
+    }
+
+    const result = await importIcs(user.userId, source);
+    const facts = await factsFromCalendar(user.userId);
+    return c.json({ ...result, factsWritten: facts });
   });
 
   /* ---------------- память ---------------- */

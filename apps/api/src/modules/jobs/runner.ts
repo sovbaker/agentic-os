@@ -333,9 +333,46 @@ export async function tick(workerId: string): Promise<number> {
   return jobs.length;
 }
 
-export function startWorker(intervalMs = 1000): () => void {
+/**
+ * Сканер поводов для проактивности.
+ *
+ * Отдельный такт с большим периодом: поводы меняются в масштабе часов,
+ * а задачи — секунд. Гонять их вместе значит либо жечь запросы впустую,
+ * либо тормозить исполнение.
+ */
+async function proactiveTick(): Promise<void> {
+  const { runFor } = await import('../proactive/index');
+  const { query } = await import('../../db/client');
+
+  // Только те, кто пользовался продуктом недавно: рассылать неактивным
+  // — самый быстрый способ научить людей отключать уведомления.
+  const users = await query<{ id: string }>(
+    `SELECT DISTINCT u.id FROM app_user u
+       JOIN device d ON d.user_id = u.id
+      WHERE d.last_seen_at > now() - interval '14 days'
+      LIMIT 500`
+  );
+
+  for (const user of users) {
+    try {
+      await runFor(user.id);
+    } catch (err) {
+      log.error('проактивный проход упал', { userId: user.id, error: (err as Error).message });
+    }
+  }
+}
+
+let proactiveTimer: NodeJS.Timeout | null = null;
+
+export function startWorker(intervalMs = 1000, proactiveIntervalMs = 15 * 60_000): () => void {
   const workerId = newWorkerId();
-  log.info('воркер запущен', { workerId, intervalMs });
+  log.info('воркер запущен', { workerId, intervalMs, proactiveIntervalMs });
+
+  proactiveTimer = setInterval(() => {
+    void proactiveTick().catch((err: unknown) =>
+      log.error('такт проактивности упал', { error: (err as Error).message })
+    );
+  }, proactiveIntervalMs);
 
   timer = setInterval(() => {
     if (running) return;
@@ -349,7 +386,9 @@ export function startWorker(intervalMs = 1000): () => void {
 
   return () => {
     if (timer) clearInterval(timer);
+    if (proactiveTimer) clearInterval(proactiveTimer);
     timer = null;
+    proactiveTimer = null;
   };
 }
 

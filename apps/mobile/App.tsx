@@ -14,7 +14,21 @@ import {
 import { StatusBar } from 'expo-status-bar';
 import type { Job, UIAction, UISpec } from '@agentic-os/contracts';
 import { KITCHEN_SINK, Renderer, darkTheme, lightTheme } from '@agentic-os/ui-registry';
-import { dispatchAction, registerDevice, setToken, streamTurn } from './src/api';
+import {
+  applyArchetypes,
+  dispatchAction,
+  fetchFeed,
+  fetchLifeMap,
+  fetchOnboarding,
+  registerDevice,
+  registerPushToken,
+  setToken,
+  streamTurn,
+  type Archetype,
+  type FeedCard,
+} from './src/api';
+import { HomeScreen } from './src/HomeScreen';
+import { pushTokens } from './src/push/index';
 import { loadToken, saveToken } from './src/storage';
 import { speech } from './src/speech/index';
 
@@ -52,6 +66,11 @@ export default function App(): React.JSX.Element {
   const [error, setError] = useState<string | null>(null);
   const [listening, setListening] = useState(false);
   const [confirm, setConfirm] = useState<PendingConfirm | null>(null);
+  const [greeting, setGreeting] = useState('Привет');
+  const [cards, setCards] = useState<FeedCard[]>([]);
+  const [archetypes, setArchetypes] = useState<Archetype[]>([]);
+  const [chosenArchetypes, setChosenArchetypes] = useState<string[]>([]);
+  const [inboxAddress, setInboxAddress] = useState<string | null>(null);
 
   const session = useRef<{ stop: () => void } | null>(null);
 
@@ -80,10 +99,31 @@ export default function App(): React.JSX.Element {
           await saveToken(token);
         }
         setReady(true);
+
+        // Лента и онбординг грузятся параллельно: ни одно из них
+        // не должно блокировать появление экрана.
+        void refreshFeed();
+        void fetchOnboarding()
+          .then((o) => {
+            setArchetypes(o.archetypes);
+            setInboxAddress(o.inboxAddress);
+          })
+          .catch(() => {});
+        void pushTokens.register().then((t) => (t ? registerPushToken(t) : undefined)).catch(() => {});
       } catch (err) {
         setError(`Не удалось подключиться к серверу: ${(err as Error).message}`);
       }
     })();
+  }, []);
+
+  const refreshFeed = useCallback(async () => {
+    try {
+      const data = await fetchFeed();
+      setGreeting(data.greeting);
+      setCards(data.cards);
+    } catch {
+      // Пустая лента лучше экрана с ошибкой: продукт остаётся рабочим.
+    }
   }, []);
 
   const submit = useCallback(async (text: string, source: 'text' | 'voice') => {
@@ -120,6 +160,7 @@ export default function App(): React.JSX.Element {
             break;
           case 'done':
             setStatus(null);
+            void refreshFeed();
             break;
         }
       });
@@ -233,23 +274,32 @@ export default function App(): React.JSX.Element {
           ) : spec ? (
             <Renderer spec={spec} data={data} state={state} theme={theme} onAction={onAction} />
           ) : (
-            <View style={styles.empty}>
-              <Text style={styles.emptyTitle}>Что тебя сейчас грузит?</Text>
-              <Text style={styles.emptyHint}>
-                Скажи или напиши — соберу под это экран и возьму дело на себя.
-              </Text>
-              <View style={{ gap: 8, marginTop: 8 }}>
-                {EXAMPLES.map((example) => (
-                  <Pressable
-                    key={example}
-                    onPress={() => void submit(example, 'text')}
-                    style={styles.example}
-                  >
-                    <Text style={styles.exampleText}>{example}</Text>
-                  </Pressable>
-                ))}
-              </View>
-            </View>
+            <HomeScreen
+              theme={theme}
+              greeting={greeting}
+              cards={cards}
+              examples={EXAMPLES}
+              archetypes={archetypes}
+              chosenArchetypes={chosenArchetypes}
+              inboxAddress={inboxAddress}
+              onExample={(text) => void submit(text, 'text')}
+              onCard={(card) => setStatus(card.body)}
+              onToggleArchetype={(id) => {
+                const next = chosenArchetypes.includes(id)
+                  ? chosenArchetypes.filter((c) => c !== id)
+                  : [...chosenArchetypes, id];
+                setChosenArchetypes(next);
+                void applyArchetypes(next);
+              }}
+              onOpenLifeMap={() => {
+                void fetchLifeMap()
+                  .then((map) => {
+                    setSpec(map.spec);
+                    setData(map.data);
+                  })
+                  .catch((err: unknown) => setError((err as Error).message));
+              }}
+            />
           )}
         </View>
 

@@ -124,6 +124,57 @@ export async function dispatchAction(
   return (await res.json()) as ActionResponse;
 }
 
+/* ---------------------------------------------------------------- */
+/* Лента и онбординг                                                  */
+/* ---------------------------------------------------------------- */
+
+export interface FeedCard {
+  kind: 'morning_brief' | 'did_for_you' | 'need_decision' | 'deadline' | 'discovery';
+  title: string;
+  body: string;
+  jobId: string | null;
+}
+
+export async function fetchFeed(): Promise<{ greeting: string; cards: FeedCard[] }> {
+  const res = await fetch(`${API_URL}/v1/feed`, { headers: headers() });
+  if (!res.ok) throw new Error(`Лента не загрузилась: ${res.status}`);
+  return (await res.json()) as { greeting: string; cards: FeedCard[] };
+}
+
+export interface Archetype {
+  id: string;
+  label: string;
+  glyph: string;
+}
+
+export async function fetchOnboarding(): Promise<{ archetypes: Archetype[]; inboxAddress: string }> {
+  const res = await fetch(`${API_URL}/v1/onboarding`, { headers: headers() });
+  if (!res.ok) throw new Error(`Онбординг не загрузился: ${res.status}`);
+  return (await res.json()) as { archetypes: Archetype[]; inboxAddress: string };
+}
+
+export async function applyArchetypes(ids: readonly string[]): Promise<void> {
+  await fetch(`${API_URL}/v1/onboarding/archetypes`, {
+    method: 'POST',
+    headers: headers(),
+    body: JSON.stringify({ ids }),
+  });
+}
+
+export async function fetchLifeMap(): Promise<MiniAppResponse> {
+  const res = await fetch(`${API_URL}/v1/lifemap`, { headers: headers() });
+  if (!res.ok) throw new Error(`Карта не загрузилась: ${res.status}`);
+  return (await res.json()) as MiniAppResponse;
+}
+
+export async function registerPushToken(token: string): Promise<void> {
+  await fetch(`${API_URL}/v1/devices/push-token`, {
+    method: 'POST',
+    headers: headers(),
+    body: JSON.stringify({ token }),
+  });
+}
+
 export async function fetchMiniApp(id: string): Promise<MiniAppResponse> {
   const res = await fetch(`${API_URL}/v1/miniapps/${id}`, { headers: headers() });
   if (!res.ok) throw new Error(`Мини-аппа не загрузилась: ${res.status}`);

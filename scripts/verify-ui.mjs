@@ -62,7 +62,18 @@ async function run(scheme) {
 
   console.log(`\n[${scheme}] стартовый экран`);
   check('заголовок онбординга виден', await page.getByText('Что тебя сейчас грузит?').isVisible());
-  await page.screenshot({ path: `${OUT}/01-home-${scheme}.png` });
+  // Онбординг без анкеты: архетипы как priors и адрес для пересылки почты.
+  check('архетипы предложены', await page.getByText('Что из этого про тебя?').isVisible());
+  check('адрес для пересылки показан', await page.getByText('@in.', { exact: false }).isVisible());
+  check('вход в карту жизни есть', await page.getByText('Что я о тебе знаю').isVisible());
+  await page.screenshot({ path: `${OUT}/01-home-${scheme}.png`, fullPage: true });
+
+  console.log(`[${scheme}] карта жизни`);
+  await page.getByText('Что я о тебе знаю').click();
+  await page.getByText('Карта твоей жизни').waitFor({ timeout: 15_000 });
+  check('карта жизни открывается', await page.getByText('Карта твоей жизни').isVisible());
+  await page.screenshot({ path: `${OUT}/06-lifemap-${scheme}.png`, fullPage: true });
+  await page.goto(`http://localhost:${PORT}/`, { waitUntil: 'networkidle' });
 
   console.log(`[${scheme}] фраза → мини-аппа`);
   await page.getByText('Надо оформить визу в Италию к октябрю').click();
