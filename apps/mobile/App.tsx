@@ -13,7 +13,7 @@ import {
 } from 'react-native';
 import { StatusBar } from 'expo-status-bar';
 import type { Job, UIAction, UISpec } from '@agentic-os/contracts';
-import { Renderer, darkTheme, lightTheme } from '@agentic-os/ui-registry';
+import { KITCHEN_SINK, Renderer, darkTheme, lightTheme } from '@agentic-os/ui-registry';
 import { dispatchAction, registerDevice, setToken, streamTurn } from './src/api';
 import { loadToken, saveToken } from './src/storage';
 import { speech } from './src/speech/index';
@@ -54,6 +54,16 @@ export default function App(): React.JSX.Element {
   const [confirm, setConfirm] = useState<PendingConfirm | null>(null);
 
   const session = useRef<{ stop: () => void } | null>(null);
+
+  /**
+   * Режим просмотра реестра: ?dev=registry в вебе. Нужен, чтобы снимать
+   * скриншоты всех компонентов сразу — иначе часть из них никогда не
+   * попадает на глаза до продакшена.
+   */
+  const devRegistry =
+    Platform.OS === 'web' &&
+    typeof window !== 'undefined' &&
+    window.location?.search?.includes('dev=registry');
 
   useEffect(() => {
     void (async () => {
@@ -218,7 +228,9 @@ export default function App(): React.JSX.Element {
         behavior={Platform.OS === 'ios' ? 'padding' : undefined}
       >
         <View style={{ flex: 1 }}>
-          {spec ? (
+          {devRegistry ? (
+            <Renderer spec={KITCHEN_SINK} data={{}} state={{}} theme={theme} onAction={onAction} />
+          ) : spec ? (
             <Renderer spec={spec} data={data} state={state} theme={theme} onAction={onAction} />
           ) : (
             <View style={styles.empty}>

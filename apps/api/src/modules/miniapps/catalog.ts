@@ -72,7 +72,7 @@ const docsDeadline: CatalogEntry = {
       version: 1,
       title: country ? `Документы: ${country}` : 'Документы и дедлайны',
       dataSources: [{ key: 'items', tool: 'docs.checklist', args: {}, deferred: false }],
-      meta: { origin: 'catalog', graphRefs: [], shareable: false },
+      meta: { origin: 'catalog', graphRefs: [], shareable: false, runtimeKeys: [] },
       root: node({
         type: 'screen',
         props: { title: country ? `Документы: ${country}` : 'Документы и дедлайны' },
@@ -172,7 +172,7 @@ const trip: CatalogEntry = {
       version: 1,
       title: dest ? `Поездка: ${dest}` : 'Поездка',
       dataSources: [{ key: 'items', tool: 'trip.checklist', args: {}, deferred: false }],
-      meta: { origin: 'catalog', graphRefs: [], shareable: false },
+      meta: { origin: 'catalog', graphRefs: [], shareable: false, runtimeKeys: [] },
       root: node({
         type: 'screen',
         props: { title: dest ? `Поездка: ${dest}` : 'Поездка' },
@@ -241,7 +241,7 @@ const genericTask: CatalogEntry = {
     version: 1,
     title: p.goal.slice(0, 60),
     dataSources: [{ key: 'items', tool: 'task.checklist', args: {}, deferred: false }],
-    meta: { origin: 'catalog', graphRefs: [], shareable: false },
+    meta: { origin: 'catalog', graphRefs: [], shareable: false, runtimeKeys: [] },
     root: node({
       type: 'screen',
       props: { title: 'Задача' },
@@ -300,8 +300,188 @@ const genericTask: CatalogEntry = {
 };
 
 /* ------------------------------------------------------------------ */
+/* Дом, ремонт, подрядчики                                             */
+/* ------------------------------------------------------------------ */
 
-export const CATALOG: readonly CatalogEntry[] = [docsDeadline, trip, genericTask];
+const homeContractors: CatalogEntry = {
+  id: 'home-contractors',
+  families: ['home'],
+  title: () => 'Подрядчики',
+
+  data: () => ({
+    items: [
+      { id: 'scope', name: 'Описать объём работ', done: false },
+      { id: 'find', name: 'Найти 3 кандидатов', done: false },
+      { id: 'quotes', name: 'Собрать сметы письменно', done: false },
+      { id: 'contract', name: 'Зафиксировать сроки в договоре', done: false },
+    ],
+    // Пустой список — нормальное состояние: варианты приедут после поиска.
+    options: [],
+  }),
+
+  build: (p) => ({
+    schemaVersion: '1.0',
+    id: 'home-contractors',
+    version: 1,
+    title: 'Подрядчики',
+    dataSources: [{ key: 'items', tool: 'task.checklist', args: {}, deferred: false }],
+    meta: { origin: 'catalog', graphRefs: [], shareable: false, runtimeKeys: [] },
+    root: {
+      type: 'screen',
+      props: { title: 'Подрядчики' },
+      children: [
+        {
+          type: 'section',
+          children: [
+            { type: 'heading', props: { text: p.goal.slice(0, 80), level: 1 } },
+            { type: 'text', props: { text: 'Веду отбор и контролирую этапы', tone: 'muted' } },
+          ],
+        },
+        {
+          // Единственное, что реально защищает деньги в ремонте.
+          type: 'alert',
+          props: {
+            tone: 'warning',
+            title: 'Правило',
+            text: 'Смета письменно, сроки этапов в договоре, аванс не больше 30%.',
+          },
+        },
+        {
+          type: 'card',
+          children: [
+            { type: 'heading', props: { text: 'Кандидаты', level: 2 } },
+            {
+              type: 'comparisonTable',
+              bind: { items: { source: 'data', path: 'options' } },
+              props: { criteria: ['Цена', 'Срок', 'Отзывы'] },
+            },
+            {
+              type: 'emptyState',
+              visibleIf: { ref: { source: 'data', path: 'options' }, op: 'empty' },
+              props: { glyph: '🔨', title: 'Кандидатов пока нет', text: 'Соберу и покажу сравнение' },
+            },
+          ],
+        },
+        {
+          type: 'card',
+          children: [
+            { type: 'heading', props: { text: 'Порядок действий', level: 2 } },
+            {
+              type: 'checklist',
+              children: [
+                {
+                  type: 'listItem',
+                  repeat: { ref: { source: 'data', path: 'items' }, as: 'item' },
+                  bind: {
+                    title: { source: 'data', path: 'item.name' },
+                    checked: { source: 'data', path: 'item.done' },
+                  },
+                  actions: {
+                    onPress: {
+                      kind: 'tool',
+                      tool: 'task.toggle_item',
+                      args: { itemId: { source: 'data', path: 'item.id' } },
+                      optimistic: true,
+                    },
+                  },
+                },
+              ],
+            },
+          ],
+        },
+      ],
+    },
+  }),
+};
+
+/* ------------------------------------------------------------------ */
+/* Здоровье и записи                                                   */
+/* ------------------------------------------------------------------ */
+
+const healthAppointments: CatalogEntry = {
+  id: 'health-appointments',
+  families: ['health'],
+  title: () => 'Здоровье',
+
+  data: () => ({
+    items: [
+      { id: 'choose', name: 'Выбрать врача или клинику', done: false },
+      { id: 'book', name: 'Записаться', done: false },
+      { id: 'prepare', name: 'Подготовиться к приёму', done: false },
+      { id: 'results', name: 'Забрать результаты', done: false },
+    ],
+    events: [],
+  }),
+
+  build: (p) => ({
+    schemaVersion: '1.0',
+    id: 'health-appointments',
+    version: 1,
+    title: 'Здоровье',
+    dataSources: [
+      { key: 'items', tool: 'task.checklist', args: {}, deferred: false },
+      { key: 'events', tool: 'calendar.list_events', args: { fromDays: 0, toDays: 60 }, deferred: true },
+    ],
+    meta: { origin: 'catalog', graphRefs: [], shareable: false, runtimeKeys: [] },
+    root: {
+      type: 'screen',
+      props: { title: 'Здоровье' },
+      children: [
+        {
+          type: 'section',
+          children: [
+            { type: 'heading', props: { text: p.goal.slice(0, 80), level: 1 } },
+            { type: 'text', props: { text: 'Держу сроки и напоминаю', tone: 'muted' } },
+          ],
+        },
+        {
+          type: 'card',
+          children: [
+            { type: 'heading', props: { text: 'Ближайшее', level: 2 } },
+            { type: 'calendar', bind: { events: { source: 'data', path: 'events' } } },
+          ],
+        },
+        {
+          type: 'card',
+          children: [
+            { type: 'heading', props: { text: 'Шаги', level: 2 } },
+            {
+              type: 'checklist',
+              children: [
+                {
+                  type: 'listItem',
+                  repeat: { ref: { source: 'data', path: 'items' }, as: 'item' },
+                  bind: {
+                    title: { source: 'data', path: 'item.name' },
+                    checked: { source: 'data', path: 'item.done' },
+                  },
+                  actions: {
+                    onPress: {
+                      kind: 'tool',
+                      tool: 'task.toggle_item',
+                      args: { itemId: { source: 'data', path: 'item.id' } },
+                      optimistic: true,
+                    },
+                  },
+                },
+              ],
+            },
+          ],
+        },
+      ],
+    },
+  }),
+};
+
+/* ------------------------------------------------------------------ */
+
+export const CATALOG: readonly CatalogEntry[] = [
+  docsDeadline,
+  trip,
+  homeContractors,
+  healthAppointments,
+  genericTask,
+];
 
 export function selectEntry(family: JobFamily): CatalogEntry {
   const match = CATALOG.find((e) => e.families.includes(family));

@@ -20,7 +20,7 @@ const base = (root: unknown): unknown => ({
   version: 1,
   title: 'Тест',
   dataSources: [{ key: 'items', tool: 'task.checklist', args: {} }],
-  meta: { origin: 'generated', graphRefs: [], shareable: false },
+  meta: { origin: 'generated', graphRefs: [], shareable: false, runtimeKeys: [] },
   root,
 });
 
@@ -50,6 +50,36 @@ test('экшен на несуществующий инструмент отбр
   );
   assert.equal(result.ok, false);
   assert.ok(result.errors.some((e) => e.message.includes('неизвестный инструмент')));
+});
+
+test('вложенный repeat по алиасу родителя — это валидно', () => {
+  // `finding` вводится циклом по findings и данными не является.
+  // Валидатор, который этого не знает, режет корректные экраны.
+  const result = validateSpec(
+    {
+      schemaVersion: '1.0', id: 'nested', version: 1, title: 'Вложенность',
+      dataSources: [],
+      meta: { origin: 'generated', graphRefs: [], shareable: false, runtimeKeys: ['findings'] },
+      root: {
+        type: 'screen',
+        children: [
+          {
+            type: 'stack',
+            repeat: { ref: { source: 'data', path: 'findings' }, as: 'finding' },
+            children: [
+              {
+                type: 'list',
+                repeat: { ref: { source: 'data', path: 'finding.keyPoints' }, as: 'point' },
+                children: [{ type: 'text', bind: { text: { source: 'data', path: 'point' } } }],
+              },
+            ],
+          },
+        ],
+      },
+    },
+    opts
+  );
+  assert.equal(result.ok, true, JSON.stringify(result.errors));
 });
 
 test('repeat по необъявленному источнику данных отбрасывается', () => {

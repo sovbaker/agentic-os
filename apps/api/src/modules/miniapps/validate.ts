@@ -28,7 +28,9 @@ function walk(
   errors: ValidationResult['errors'],
   opts: ValidateOptions,
   dataKeys: ReadonlySet<string>,
-  path: string
+  path: string,
+  /** Переменные, введённые repeat у предков: `finding` внутри цикла по findings. */
+  aliases: ReadonlySet<string> = new Set()
 ): void {
   stats.nodes += 1;
   stats.depth = Math.max(stats.depth, depth);
@@ -56,19 +58,22 @@ function walk(
 
   // repeat по источнику, которого нет, — самая частая ошибка генерации:
   // экран рендерится пустым, и это выглядит как баг рендерера.
+  let childAliases = aliases;
+
   if (node.repeat) {
     const root = node.repeat.ref.path.split('.')[0];
-    if (node.repeat.ref.source === 'data' && root && !dataKeys.has(root)) {
+    if (node.repeat.ref.source === 'data' && root && !dataKeys.has(root) && !aliases.has(root)) {
       errors.push({
         path: `${path}.repeat`,
-        message: `repeat ссылается на "${root}", которого нет в dataSources`,
-        hint: `доступные ключи: ${[...dataKeys].join(', ') || '(нет)'}`,
+        message: `repeat ссылается на "${root}", которого нет ни в dataSources, ни в runtimeKeys`,
+        hint: `доступные ключи: ${[...dataKeys, ...aliases].join(', ') || '(нет)'}`,
       });
     }
+    childAliases = new Set([...aliases, node.repeat.as]);
   }
 
   node.children?.forEach((child, i) =>
-    walk(child, depth + 1, stats, errors, opts, dataKeys, `${path}.children[${i}]`)
+    walk(child, depth + 1, stats, errors, opts, dataKeys, `${path}.children[${i}]`, childAliases)
   );
 }
 
@@ -89,7 +94,7 @@ export function validateSpec(input: unknown, opts: ValidateOptions): ValidationR
   const spec = parsed.data;
   const errors: ValidationResult['errors'] = [];
   const stats: Stats = { nodes: 0, depth: 0, bindings: 0, actions: 0 };
-  const dataKeys = new Set(spec.dataSources.map((d) => d.key));
+  const dataKeys = new Set([...spec.dataSources.map((d) => d.key), ...spec.meta.runtimeKeys]);
 
   walk(spec.root, 1, stats, errors, opts, dataKeys, 'root');
 

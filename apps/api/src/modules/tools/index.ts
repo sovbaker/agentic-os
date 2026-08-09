@@ -1,8 +1,8 @@
 import type { PermissionClass, ToolManifest, UISpec } from '@agentic-os/contracts';
 import { query, queryOne, transaction } from '../../db/client';
 import type { ExtractedFact } from '../orchestrator/llm';
-import { selectEntry, type CatalogParams } from '../miniapps/catalog';
-import { validateSpec } from '../miniapps/validate';
+import { compose } from '../miniapps/compose';
+import { createLlm } from '../orchestrator/llm';
 import type { JobFamily } from '../orchestrator/llm';
 import { calendar } from './calendar';
 import { createSearch } from './search';
@@ -61,6 +61,7 @@ interface ChecklistItem {
 }
 
 const search = createSearch();
+const llm = createLlm();
 
 const str = (v: unknown, fallback = ''): string => (typeof v === 'string' ? v : fallback);
 const num = (v: unknown, fallback: number): number => (typeof v === 'number' ? v : fallback);
@@ -404,23 +405,17 @@ const miniappCompose: Tool = {
     internal: true,
   },
   async exec(ctx, args) {
-    const catalogParams: CatalogParams = {
-      goal: str(args['goal'], 'Задача'),
-      params: (args['params'] as Record<string, string>) ?? {},
-      locale: str(args['locale'], 'ru-RU'),
-    };
-    const entry = selectEntry(str(args['family'], 'other') as JobFamily);
+    const result = await compose(
+      {
+        family: str(args['family'], 'other') as JobFamily,
+        goal: str(args['goal'], 'Задача'),
+        params: (args['params'] as Record<string, string>) ?? {},
+        locale: str(args['locale'], 'ru-RU'),
+      },
+      { llm }
+    );
 
-    const spec = entry.build(catalogParams);
-    const data = entry.data(catalogParams);
-
-    const validation = validateSpec(spec, { knownTools: KNOWN_TOOLS });
-    if (!validation.ok) {
-      return {
-        ok: false,
-        message: `мини-аппа не прошла валидацию: ${JSON.stringify(validation.errors.slice(0, 2))}`,
-      };
-    }
+    const { spec, data } = result;
 
     await query(
       `INSERT INTO miniapp (id, version, user_id, title, origin, spec)
@@ -435,7 +430,7 @@ const miniappCompose: Tool = {
       [ctx.userId, spec.id, JSON.stringify(data)]
     );
 
-    return { ok: true, spec, dataPatch: data };
+    return { ok: true, spec, dataPatch: data, message: undefined };
   },
 };
 

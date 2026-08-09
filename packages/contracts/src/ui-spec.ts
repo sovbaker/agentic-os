@@ -27,10 +27,10 @@ export const ComponentType = z.enum([
   // медиа
   'image', 'icon', 'avatar',
   // данные
-  'list', 'listItem', 'table', 'keyValue', 'chart', 'progress', 'stat', 'timeline', 'calendar', 'map',
+  'list', 'listItem', 'table', 'keyValue', 'chart', 'progress', 'stat', 'timeline', 'calendar',
   // ввод
   'textField', 'textArea', 'numberField', 'select', 'multiSelect',
-  'datePicker', 'timePicker', 'toggle', 'slider', 'checkbox', 'radioGroup', 'rating', 'fileUpload',
+  'datePicker', 'timePicker', 'toggle', 'slider', 'checkbox', 'radioGroup', 'rating',
   // действия
   'button', 'buttonGroup', 'link',
   // обратная связь
@@ -181,6 +181,12 @@ export const UISpec = z.object({
 
   meta: z.object({
     origin: z.enum(['catalog', 'parameterized', 'generated']),
+    /**
+     * Ключи данных, которые кладут шаги задачи во время исполнения
+     * (например findings после поиска). Объявляются явно: иначе валидатор
+     * не отличит их от опечатки в пути привязки.
+     */
+    runtimeKeys: z.array(z.string()).default([]),
     /** Сущности life graph, к которым привязана аппа. */
     graphRefs: z.array(z.string()).default([]),
     shareable: z.boolean().default(false),

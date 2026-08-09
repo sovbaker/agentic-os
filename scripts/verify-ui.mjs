@@ -96,6 +96,13 @@ async function run(scheme) {
     await page.getByText('Напомню', { exact: false }).isVisible());
   await page.screenshot({ path: `${OUT}/04-reminder-${scheme}.png` });
 
+  // Скриншот-тест реестра: все 49 компонентов на одном экране.
+  console.log(`[${scheme}] реестр компонентов`);
+  await page.goto(`http://localhost:${PORT}/?dev=registry`, { waitUntil: 'networkidle' });
+  await page.getByText('Реестр компонентов').first().waitFor({ timeout: 15_000 });
+  check('реестр отрендерился целиком', await page.getByText('Действия и состояния').isVisible());
+  await page.screenshot({ path: `${OUT}/05-registry-${scheme}.png`, fullPage: true });
+
   check('ошибок в консоли нет', errors.length === 0);
   if (errors.length) console.log('    ', errors.slice(0, 3));
 
