@@ -48,13 +48,16 @@ openssl rand -hex 32      # INBOUND_SECRET, METRICS_TOKEN
 ### Проверка после запуска
 
 ```bash
-curl -sS https://$API_DOMAIN/health                       # {"ok":true,"db":true}
-curl -sS -X POST https://$API_DOMAIN/v1/inbound/email     # 503, пока нет INBOUND_SECRET
-curl -sS https://$API_DOMAIN/v1/metrics                   # 401 без токена
+curl -sS https://$API_DOMAIN/health                    # {"ok":true,"db":true}
+curl -sS -X POST https://$API_DOMAIN/v1/inbound/email  # 401 с секретом, 503 без
+curl -sS https://$API_DOMAIN/v1/metrics                # 401 без токена
 ```
 
-Все три ответа обязательны. `200` на второй или третьей строке означает
-открытую ручку, а не работающий сервер.
+Проверяется здесь ровно одно: что на второй и третьей строках **не 200**.
+Какой именно отказ — 401 (секрет задан, заголовка нет) или 503 (секрет не
+задан, ручка выключена) — зависит от того, заполнил ли ты `.env`. А вот
+`200` означает открытую ручку в интернет, и это единственный ответ,
+после которого дальше идти нельзя.
 
 В логе старта смотрим три поля:
 
@@ -116,13 +119,21 @@ scp -r server:/var/lib/docker/volumes/agentic-os_backups/_data/ ~/backups/
 восстанавливались, бэкапом не является.
 
 ```bash
+docker compose exec db createdb -U agentic restore_test
 gunzip -c agentic_os-<штамп>.sql.gz | \
-  docker compose exec -T db psql -U agentic -d agentic_os_restore_test
+  docker compose exec -T db psql -U agentic -d restore_test
+docker compose exec db psql -U agentic -d restore_test \
+  -c "SELECT (SELECT count(*) FROM app_user) AS users,
+             (SELECT count(*) FROM fact)     AS facts,
+             (SELECT count(*) FROM job)      AS jobs,
+             (SELECT count(*) FROM audit_log) AS audit"
+docker compose exec db dropdb -U agentic restore_test
 ```
 
-Проверяем не «команда отработала», а число строк в `app_user`, `fact`,
-`job` и `audit_log`: восстановление, потерявшее журнал действий, теряет
-и возможность что-либо отменить.
+Смотрим не на «команда отработала», а на четыре числа и сверяем их с
+боевой базой. Восстановление, потерявшее `audit_log`, теряет вместе с
+ним возможность что-либо отменить — а это единственное, что мы обещаем
+пользователю про необратимость.
 
 ---
 
