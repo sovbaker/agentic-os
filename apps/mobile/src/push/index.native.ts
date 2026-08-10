@@ -21,13 +21,27 @@ interface NotificationsModule {
  * молча, а продукт теряет единственный канал проактивности на iOS. Берём
  * из конфигурации сборки: в дев-клиенте он приходит из `app.json`.
  */
+const PLACEHOLDER_PROJECT_ID = '00000000-0000-0000-0000-000000000000';
+
 function projectId(): string | undefined {
   try {
     // eslint-disable-next-line @typescript-eslint/no-require-imports
     const Constants = require('expo-constants') as {
       default?: { expoConfig?: { extra?: { eas?: { projectId?: string } } } };
     };
-    return Constants.default?.expoConfig?.extra?.eas?.projectId;
+    const id = Constants.default?.expoConfig?.extra?.eas?.projectId;
+
+    /*
+     * Заглушка в app.json до `eas init`. Отличить её от настоящего
+     * идентификатора важнее, чем кажется: с ней регистрация падает
+     * внутри Expo, ловится нашим catch и возвращает null — то есть
+     * пуши не работают, и об этом нигде не сказано ни слова.
+     */
+    if (id === PLACEHOLDER_PROJECT_ID) {
+      console.warn('projectId — заглушка: выполни `eas init`, иначе пуши не заработают');
+      return undefined;
+    }
+    return id;
   } catch {
     return undefined;
   }
