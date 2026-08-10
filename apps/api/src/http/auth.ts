@@ -1,5 +1,6 @@
 import { createHash, randomBytes } from 'node:crypto';
 import type { Context, Next } from 'hono';
+import { config } from '../config';
 import { queryOne, query } from '../db/client';
 
 /**
@@ -32,8 +33,8 @@ export async function registerDevice(input: {
   timezone: string;
 }): Promise<{ token: string; userId: string; deviceId: string }> {
   const user = await queryOne<{ id: string }>(
-    'INSERT INTO app_user (locale, timezone) VALUES ($1, $2) RETURNING id',
-    [input.locale, input.timezone]
+    'INSERT INTO app_user (locale, timezone, plan) VALUES ($1, $2, $3) RETURNING id',
+    [input.locale, input.timezone, config.defaultPlan]
   );
   if (!user) throw new Error('failed to create user');
 

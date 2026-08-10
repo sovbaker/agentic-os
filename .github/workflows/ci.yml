@@ -1,0 +1,102 @@
+# Проверка на каждый пуш.
+#
+# Три уровня, и каждый ловит свой класс ошибок:
+#
+#   1. типы           — сломанный контракт между пакетами;
+#   2. тесты          — логика, включая ту, что живёт в SQL и без базы
+#                       не проверяется вовсе (аренда задачи, идемпотентность);
+#   3. verify:ui      — весь контур в настоящем браузере: фраза → SSE →
+#                       UISpec → рендер → тап → действие на сервере.
+#
+# Третий уровень нужен потому, что первые два уже один раз пропустили
+# пустой экран: компонент получил не те поля, типы сошлись, а человек
+# увидел ничего.
+
+name: CI
+
+on:
+  push:
+  pull_request:
+
+concurrency:
+  # Новый пуш отменяет проверку предыдущего: смысл проверять код,
+  # который уже переписан, нулевой, а очередь он занимает.
+  group: ci-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  check:
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+
+    services:
+      postgres:
+        # Образ с pgvector, а не голый postgres: без расширения миграция
+        # 002 пропускается, и векторная ветка retrieval не проверяется
+        # нигде до продакшена.
+        image: pgvector/pgvector:pg16
+        env:
+          POSTGRES_PASSWORD: postgres
+          POSTGRES_DB: agentic_os
+        ports:
+          - 5432:5432
+        options: >-
+          --health-cmd "pg_isready -U postgres"
+          --health-interval 5s
+          --health-timeout 5s
+          --health-retries 20
+
+    env:
+      DATABASE_URL: postgres://postgres:postgres@localhost:5432/agentic_os
+      # Ключа Anthropic в CI нет и не должно быть: оркестратор падает
+      # на детерминированный адаптер, и весь контур проверяется без
+      # расхода на токены и без секрета в окружении сборки.
+      LOG_LEVEL: warn
+
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22
+          cache: npm
+
+      - run: npm ci
+
+      - name: Типы
+        run: npm run typecheck
+
+      - name: Миграции
+        run: npm run db:migrate
+
+      - name: Тесты
+        run: npm test
+
+      - name: Браузер для verify:ui
+        run: npx playwright install --with-deps chromium
+
+      - name: Сборка веба
+        run: npm run build:web
+
+      - name: Запуск API
+        run: |
+          # start, а не dev: watch-режим в CI перезапускал бы сервер
+          # на каждое касание файла сборкой веба.
+          npm run start -w @agentic-os/api > /tmp/api.log 2>&1 &
+          for i in $(seq 1 60); do
+            if curl -fsS http://localhost:8787/health > /dev/null; then
+              echo "API поднялся"
+              exit 0
+            fi
+            sleep 1
+          done
+          echo "API не поднялся за 60 секунд"
+          cat /tmp/api.log
+          exit 1
+
+      - name: Проверка интерфейса
+        run: npm run verify:ui
+
+      - name: Лог API при провале
+        if: failure()
+        run: cat /tmp/api.log || true

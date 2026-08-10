@@ -13,13 +13,14 @@
       "bundleIdentifier": "ru.agenticos.app",
       "infoPlist": {
         "NSMicrophoneUsageDescription": "Микрофон нужен, чтобы можно было надиктовать задачу голосом.",
-        "NSSpeechRecognitionUsageDescription": "Распознавание речи нужно, чтобы превратить надиктованную задачу в текст."
+        "NSSpeechRecognitionUsageDescription": "Распознавание речи нужно, чтобы превратить надиктованную задачу в текст.",
+        "NSUserTrackingUsageDescription": "Мы не отслеживаем тебя между приложениями и не передаём данные рекламным сетям."
       }
     },
     "android": {
       "package": "ru.agenticos.app",
       "adaptiveIcon": {
-        "backgroundColor": "#1C1917",
+        "backgroundColor": "#131316",
         "foregroundImage": "./assets/android-icon-foreground.png",
         "backgroundImage": "./assets/android-icon-background.png",
         "monochromeImage": "./assets/android-icon-monochrome.png"
@@ -31,10 +32,20 @@
       "bundler": "metro"
     },
     "plugins": [
-      "expo-dev-client"
+      "expo-dev-client",
+      "expo-font",
+      [
+        "expo-notifications",
+        {
+          "color": "#A82D14"
+        }
+      ],
+      "expo-secure-store"
     ],
     "extra": {
-      "apiUrl": "http://localhost:8787"
+      "eas": {
+        "projectId": "00000000-0000-0000-0000-000000000000"
+      }
     }
   }
 }

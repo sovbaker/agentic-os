@@ -42,6 +42,15 @@ export interface ToolResult {
    * напрямую: исполнитель обязан прогнать его через карантин.
    */
   untrusted?: UntrustedPayload;
+  /**
+   * Ход перешёл к третьей стороне.
+   *
+   * Состояние `waiting_world` существовало в модели с S1, но в него никто
+   * не переводил задачу — значит компонент «жду ответа» было нечем
+   * наполнить. Инструмент, после которого мяч не у нас и не у человека,
+   * обязан сказать это явно.
+   */
+  awaiting?: { who: string; usually?: string };
   audit?: {
     humanReadable: string;
     reason: string;
@@ -154,25 +163,94 @@ const scheduleReminder: Tool = {
     const afterDays = num(args['afterDays'], 1);
     const about = str(args['about'], 'Напоминание');
     const when = new Date(Date.now() + afterDays * 24 * 3600 * 1000);
+    const day = when.toISOString().slice(0, 10);
+    const label = when.toLocaleDateString('ru-RU');
 
-    await query(
-      `INSERT INTO proactive_event (user_id, kind, title, body, job_id, score, scheduled_for)
-       VALUES ($1, 'deadline', $2, $3, $4, 0.7, $5)`,
-      [ctx.userId, about, `Напоминаю: ${about}`, ctx.jobId ?? null, when.toISOString()]
+    /*
+     * Ключ дедупликации по «кому, о чём и на какой день».
+     *
+     * Одно и то же напоминание приходит из двух мест по замыслу: шаг плана
+     * ставит его сам, и кнопка в мини-аппе предлагает поставить. Плюс
+     * повтор шага после перезапуска. Для продукта, который продаёт «я держу
+     * твои дела», два одинаковых напоминания — прямой удар по доверию,
+     * поэтому вторую вставку отсекает база, а не дисциплина вызывающих.
+     */
+    const dedupKey = `reminder:${about.slice(0, 40)}:${day}`;
+
+    const inserted = await queryOne<{ id: string }>(
+      `INSERT INTO proactive_event (user_id, kind, title, body, job_id, score, scheduled_for, dedup_key)
+       VALUES ($1, 'deadline', $2, $3, $4, 0.7, $5, $6)
+       ON CONFLICT (user_id, dedup_key) WHERE dedup_key IS NOT NULL DO NOTHING
+       RETURNING id`,
+      [ctx.userId, about, `Напоминаю: ${about}`, ctx.jobId ?? null, when.toISOString(), dedupKey]
     );
+
+    const patch = { reminderState: 'done', reminderDone: `Напомню ${label}` };
+
+    // Состояние переживает переоткрытие экрана: иначе кнопка снова активна
+    // и приглашает поставить второе напоминание.
+    if (ctx.specId) {
+      const stored = await loadState(ctx.userId, ctx.specId);
+      await saveState(ctx.userId, ctx.specId, { ...stored, ...patch });
+    }
+
+    if (!inserted) {
+      return { ok: true, message: `Уже напомню ${label}`, dataPatch: patch };
+    }
 
     return {
       ok: true,
-      message: `Напомню ${when.toLocaleDateString('ru-RU')}`,
+      message: `Напомню ${label}`,
       // Кнопка узнаёт о результате из данных, а не из баннера над клавиатурой.
-      dataPatch: {
-        reminderState: 'done',
-        reminderDone: `Напомню ${when.toLocaleDateString('ru-RU')}`,
-      },
+      dataPatch: patch,
       audit: {
-        humanReadable: `Поставил напоминание «${about}» на ${when.toLocaleDateString('ru-RU')}`,
+        humanReadable: `Поставил напоминание «${about}» на ${label}`,
         reason: 'шаг плана задачи',
         reversible: true,
+        // «Обратимо» без указания, ЧЕМ откатывать, — просто отметка в журнале.
+        compensation: { tool: 'reminder.cancel', args: { eventId: inserted.id } },
+      },
+    };
+  },
+};
+
+/**
+ * Отмена напоминания. Была объявлена в манифесте и в плане, но не
+ * зарегистрирована — то есть компенсация при отмене задачи молча
+ * проваливалась, а журнал показывал «обратимо» без возможности отменить.
+ */
+const cancelReminder: Tool = {
+  manifest: {
+    name: 'reminder.cancel',
+    description: 'Отменить поставленное напоминание',
+    inputSchema: { eventId: 'string' },
+    permission: 'auto',
+    returnsUntrusted: false,
+    costHint: 'free',
+    timeoutMs: 5_000,
+    source: 'builtin',
+  },
+  async exec(ctx, args) {
+    const eventId = str(args['eventId']);
+    const row = eventId
+      ? await queryOne<{ id: string }>(
+          `DELETE FROM proactive_event
+            WHERE id = $1 AND user_id = $2 AND delivered_at IS NULL
+            RETURNING id`,
+          [eventId, ctx.userId]
+        )
+      : null;
+
+    if (!row) return { ok: false, message: 'Это напоминание уже отправлено или снято' };
+
+    return {
+      ok: true,
+      message: 'Напоминание снято',
+      dataPatch: { reminderState: 'idle' },
+      audit: {
+        humanReadable: 'Снял напоминание',
+        reason: 'отмена задачи или действие пользователя',
+        reversible: false,
       },
     };
   },
@@ -564,8 +642,15 @@ const prepareHandoff: Tool = {
     const built = template((args['params'] as Record<string, string>) ?? {});
     if (!built.url) return { ok: false, message: 'не хватает данных для перехода' };
 
+    const who = str(args['who']);
+
     // Ссылку отдаём как данные: открывает её пользователь, не агент.
-    return { ok: true, dataPatch: { handoff: built } };
+    return {
+      ok: true,
+      dataPatch: { handoff: built },
+      // После передачи наружу ход не у нас: если известно кому — говорим это.
+      ...(who ? { awaiting: { who, usually: str(args['usually']) || undefined } } : {}),
+    };
   },
 };
 
@@ -768,6 +853,7 @@ const privacyDelete: Tool = {
 
 const TOOL_LIST: readonly Tool[] = [
   answerQuestion,
+  cancelReminder,
   confirmMove,
   undoMove,
   privacyExport,

@@ -1,5 +1,7 @@
+import { timingSafeEqual } from 'node:crypto';
 import { Hono } from 'hono';
 import { cors } from 'hono/cors';
+import { secureHeaders } from 'hono/secure-headers';
 import { streamSSE } from 'hono/streaming';
 import {
   ActionRequest,
@@ -8,9 +10,11 @@ import {
   UISpec,
   type ActionResponse,
 } from '@agentic-os/contracts';
+import { config } from '../config';
 import { healthcheck, query, queryOne } from '../db/client';
 import { log } from '../obs/log';
 import { authMiddleware, registerDevice } from './auth';
+import { bodyGuard, rateLimit } from './limits';
 import { handleTurn } from '../modules/orchestrator/index';
 import { execTool, manifestOf } from '../modules/tools/index';
 import { getJob, listJobs, stepsOf } from '../modules/jobs/store';
@@ -28,10 +32,80 @@ import { deleteUser, exportUser, privacySummary } from '../modules/privacy/index
 import { buildPrivacyScreen } from '../modules/privacy/screen';
 import * as metrics from '../modules/metrics/index';
 
+/**
+ * Сравнение общих секретов за постоянное время.
+ *
+ * Обычное `===` на строках выходит из цикла на первом несовпавшем байте,
+ * и по времени ответа секрет подбирается посимвольно. Ручки без сессии —
+ * почта и метрики — держатся ровно на этих двух строках, так что здесь
+ * это не теоретическая аккуратность.
+ */
+function secretMatches(expected: string, got: string | undefined): boolean {
+  if (!got) return false;
+  const a = Buffer.from(expected);
+  const b = Buffer.from(got);
+  // Длина утекает всё равно — её сравниваем обычным способом.
+  return a.length === b.length && timingSafeEqual(a, b);
+}
+
 export function createApp(): Hono {
   const app = new Hono();
 
-  app.use('*', cors({ origin: '*', allowHeaders: ['Authorization', 'Content-Type'] }));
+  /**
+   * Заголовки безопасности. Здесь только API: ни строчки HTML не отдаётся,
+   * поэтому `default-src 'none'` — не осторожность, а точное описание.
+   *
+   * `Cross-Origin-Resource-Policy` явно ослаблен до `cross-origin`:
+   * значение по умолчанию (`same-origin`) отрезало бы веб-клиента,
+   * который живёт на другом порту, а именно им проверяется вёрстка.
+   */
+  app.use(
+    '*',
+    secureHeaders({
+      contentSecurityPolicy: { defaultSrc: ["'none'"], frameAncestors: ["'none'"] },
+      crossOriginResourcePolicy: 'cross-origin',
+      xFrameOptions: 'DENY',
+    })
+  );
+
+  /**
+   * CORS по списку, а не по «звёздочке».
+   *
+   * Нативный клиент Origin не шлёт и в эту проверку не попадает вовсе —
+   * заголовок нужен только веб-экспорту. Открытый же CORS на API,
+   * который авторизует по bearer-токену, означает, что любая вкладка
+   * в браузере пользователя сможет читать ответы от его имени, если
+   * доберётся до токена.
+   */
+  app.use(
+    '*',
+    cors({
+      origin: (origin) => (config.corsOrigins.includes(origin) ? origin : null),
+      allowHeaders: ['Authorization', 'Content-Type'],
+      allowMethods: ['GET', 'POST', 'OPTIONS'],
+    })
+  );
+
+  /**
+   * Потолок на тело — до разбора JSON. Проверять размер после парсинга
+   * поздно: память уже занята.
+   */
+  app.use('/v1/*', bodyGuard());
+
+  /**
+   * Лимиты складываются слоями: общий потолок на всё, что под `/v1`,
+   * плюс более узкий на дорогих ручках. Запрос к `/v1/turns` отмечается
+   * в обоих счётчиках — это и задумано: первый ловит поток запросов,
+   * второй — расход на модель.
+   */
+  app.use('/v1/*', rateLimit('read'));
+  app.use('/v1/devices', rateLimit('register'));
+  app.use('/v1/turns', rateLimit('turn'));
+  app.use('/v1/actions', rateLimit('write'));
+  app.use('/v1/import/ics', rateLimit('write'));
+  app.use('/v1/inbound/email', rateLimit('write'));
+  app.use('/v1/privacy/export', rateLimit('write'));
+  app.use('/v1/privacy/delete', rateLimit('write'));
 
   app.onError((err, c) => {
     log.error('unhandled request error', { error: err.message, path: c.req.path });
@@ -302,7 +376,7 @@ export function createApp(): Hono {
     return c.json({
       archetypes: ARCHETYPES.map((a) => ({ id: a.id, label: a.label, icon: a.icon })),
       // Адрес для пересылки: подключение почты без единой верификации.
-      inboxAddress: `u+${inboxKey}@${process.env['INBOUND_DOMAIN'] ?? 'in.localhost'}`,
+      inboxAddress: `u+${inboxKey}@${config.inboundDomain}`,
     });
   });
 
@@ -324,10 +398,20 @@ export function createApp(): Hono {
   /**
    * Приём пересланной почты. Аутентификация по общему секрету, а не по
    * пользователю: письмо приходит от почтового шлюза, а не из приложения.
+   *
+   * Без секрета ручка не работает вовсе. Раньше пустая переменная означала
+   * «пускать всех», и это ровно тот случай, когда забытая настройка
+   * оборачивается дырой: адрес вида `u+ключ@домен` виден пользователю и
+   * пересылается им дальше, так что знание адреса — не секрет. Кто угодно
+   * мог бы дописать в чужой карантин текст, который потом читает модель.
    */
   app.post('/v1/inbound/email', async (c) => {
-    const secret = process.env['INBOUND_SECRET'];
-    if (secret && c.req.header('x-inbound-secret') !== secret) {
+    const secret = config.inboundSecret;
+    if (!secret) {
+      log.warn('входящая почта отключена: INBOUND_SECRET не задан');
+      return c.json({ error: 'Приём почты не настроен', code: 'inbound_disabled' }, 503);
+    }
+    if (!secretMatches(secret, c.req.header('x-inbound-secret'))) {
       return c.json({ error: 'Нет доступа', code: 'unauthorized' }, 401);
     }
 
@@ -435,8 +519,8 @@ export function createApp(): Hono {
    * забытая переменная не должна оборачиваться открытой аналитикой.
    */
   app.get('/v1/metrics', async (c) => {
-    const token = process.env['METRICS_TOKEN'];
-    if (!token || c.req.header('x-metrics-token') !== token) {
+    const token = config.metricsToken;
+    if (!token || !secretMatches(token, c.req.header('x-metrics-token'))) {
       return c.json({ error: 'Нет доступа', code: 'unauthorized' }, 401);
     }
     return c.json(await metrics.snapshot());

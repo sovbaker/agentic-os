@@ -48,9 +48,44 @@ export const config = {
   recordEvals: process.env['RECORD_EVALS'] === '1',
   evalsDir: env('EVALS_DIR', 'packages/evals/cases'),
 
+  /**
+   * Тариф, с которым заводится новый пользователь.
+   *
+   * По умолчанию `free` — и на нём выключены генерация мини-апп и вся
+   * проактивность с пушами. Для личного тестирования и закрытой беты это
+   * значит проверять продукт без его ретеншн-механики и без гейта G2,
+   * поэтому бета поднимается с `DEFAULT_PLAN=pro`. Денег на бете не берём —
+   * берём обязательство в интервью, так что тариф здесь про доступ
+   * к возможностям, а не про оплату.
+   */
+  defaultPlan: env('DEFAULT_PLAN', 'free') === 'pro' ? 'pro' : 'free',
+
   /** Рынок РФ первым (решение D1), но нигде не зашито в код — только здесь. */
   defaultLocale: env('DEFAULT_LOCALE', 'ru-RU'),
   defaultTimezone: env('DEFAULT_TIMEZONE', 'Europe/Moscow'),
+
+  /**
+   * Публичные ручки без пользовательской сессии. Обе — «нет секрета,
+   * значит ручки нет»: пустая переменная окружения не должна
+   * оборачиваться открытым входом в чужие данные.
+   */
+  inboundSecret: process.env['INBOUND_SECRET'] ?? null,
+  inboundDomain: env('INBOUND_DOMAIN', 'in.localhost'),
+  metricsToken: process.env['METRICS_TOKEN'] ?? null,
+
+  /**
+   * Список origin для CORS.
+   *
+   * Нативный клиент вообще не шлёт Origin — CORS его не касается.
+   * Заголовок нужен только веб-экспорту (им же проверяется вёрстка),
+   * поэтому по умолчанию здесь локальная разработка, а не «звёздочка»:
+   * открытый CORS на API с bearer-токеном означает, что любой сайт
+   * в браузере пользователя сможет читать ответы от его имени.
+   */
+  corsOrigins: env('CORS_ORIGINS', 'http://localhost:8081,http://localhost:19006,http://localhost:4173')
+    .split(',')
+    .map((s) => s.trim())
+    .filter(Boolean),
 
   logLevel: env('LOG_LEVEL', 'info') as 'debug' | 'info' | 'warn' | 'error',
 } as const;

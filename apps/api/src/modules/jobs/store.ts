@@ -178,6 +178,38 @@ export async function setStatus(
   );
 }
 
+/**
+ * Запомнить, чьего ответа ждёт задача.
+ *
+ * Без этих полей компонент «жду ответа от X» нечем наполнить, а без него
+ * ось «чей ход» отвечает только за два состояния из четырёх.
+ */
+export async function setAwaiting(
+  jobId: string,
+  awaiting: { who: string; usually?: string | undefined } | null
+): Promise<void> {
+  await query(
+    `UPDATE job
+        SET awaiting_who = $2,
+            awaiting_usually = $3,
+            awaiting_since = CASE WHEN $2::text IS NULL THEN NULL ELSE COALESCE(awaiting_since, now()) END,
+            updated_at = now()
+      WHERE id = $1`,
+    [jobId, awaiting?.who ?? null, awaiting?.usually ?? null]
+  );
+}
+
+/** Объявленное намерение: что агент собирается сделать и что уйдёт наружу. */
+export async function setIntent(
+  jobId: string,
+  intent: { title: string; after: string; discloses: string } | null
+): Promise<void> {
+  await query(
+    `UPDATE job SET intent = $2::jsonb, updated_at = now() WHERE id = $1`,
+    [jobId, intent ? JSON.stringify(intent) : null]
+  );
+}
+
 export async function addArtifact(
   jobId: string,
   artifact: { kind: 'miniapp' | 'document' | 'draft' | 'report'; id: string; title: string }
@@ -231,9 +263,36 @@ export async function stepsOf(jobId: string): Promise<Array<JobStep & { title: s
   return rows.map((r) => ({ ...toStep(r), title: r.title, compensation: r.compensation }));
 }
 
-export async function markStepRunning(stepId: string): Promise<void> {
+/**
+ * Взять шаг в работу.
+ *
+ * Условный UPDATE, а не безусловный: между `runnableSteps` и этим вызовом
+ * есть окно, в которое второй исполнитель успевает прочитать тот же шаг
+ * как `pending`. Гарантию даёт база — переход `pending → running` выигрывает
+ * ровно один, остальные получают `false` и шаг пропускают.
+ *
+ * Без этого долгий шаг (поиск, планирование) исполнялся дважды, и для
+ * инструмента без ключа идемпотентности это второе напоминание.
+ */
+export async function markStepRunning(stepId: string): Promise<boolean> {
+  const row = await queryOne<{ id: string }>(
+    `UPDATE job_step SET status = 'running', attempts = attempts + 1, started_at = now()
+      WHERE id = $1 AND status = 'pending'
+      RETURNING id`,
+    [stepId]
+  );
+  return row !== null;
+}
+
+/**
+ * Вернуть шаг в очередь, не считая попытку неудачной.
+ *
+ * Нужен, когда шаг остановлен не ошибкой, а ожиданием решения человека:
+ * подтвердит — тот же шаг выполнится, и это не «второй заход».
+ */
+export async function markStepPending(stepId: string): Promise<void> {
   await query(
-    `UPDATE job_step SET status = 'running', attempts = attempts + 1, started_at = now() WHERE id = $1`,
+    `UPDATE job_step SET status = 'pending', attempts = GREATEST(attempts - 1, 0), started_at = NULL WHERE id = $1`,
     [stepId]
   );
 }
@@ -322,6 +381,24 @@ export async function claimJobs(workerId: string, limit = 5): Promise<Job[]> {
     [workerId, limit, String(LEASE_MS)]
   );
   return rows.map((r) => toJob(r));
+}
+
+/**
+ * Взять в работу одну конкретную задачу.
+ *
+ * Нужна потоку SSE: он ведёт задачу синхронно, чтобы отдать пользователю
+ * прогресс, и обязан делать это под той же арендой, что и фоновый воркер.
+ * Раньше он исполнял шаги вообще без аренды — два драйвера вели одну
+ * задачу одновременно.
+ */
+export async function claimJob(jobId: string, workerId: string): Promise<boolean> {
+  const row = await queryOne<{ id: string }>(
+    `UPDATE job SET locked_by = $2, locked_until = now() + ($3 || ' milliseconds')::interval
+      WHERE id = $1 AND (locked_until IS NULL OR locked_until < now())
+      RETURNING id`,
+    [jobId, workerId, String(LEASE_MS)]
+  );
+  return row !== null;
 }
 
 export async function extendLease(jobId: string, workerId: string): Promise<void> {

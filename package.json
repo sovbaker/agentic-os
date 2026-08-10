@@ -8,7 +8,7 @@
     "apps/mobile"
   ],
   "scripts": {
-    "typecheck": "npm run typecheck --workspaces --if-present",
+    "typecheck": "npm run typecheck --workspaces --if-present && tsc --noEmit -p scripts",
     "test": "npm run test --workspaces --if-present",
     "db:migrate": "npm run migrate -w @agentic-os/api",
     "dev:api": "npm run dev -w @agentic-os/api",
@@ -16,6 +16,7 @@
     "evals": "tsx apps/api/src/modules/evals/cli.ts",
     "metrics": "tsx apps/api/src/modules/metrics/cli.ts",
     "verify:ui": "node scripts/verify-ui.mjs",
+    "smoke:llm": "tsx scripts/smoke-llm.ts",
     "build:web": "npm run export:web -w @agentic-os/mobile"
   },
   "devDependencies": {

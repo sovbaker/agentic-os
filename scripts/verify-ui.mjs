@@ -41,7 +41,13 @@ const server = createServer(async (req, res) => {
 
 await new Promise((resolve) => server.listen(PORT, resolve));
 
-const browser = await chromium.launch({ executablePath: '/opt/pw-browsers/chromium-1194/chrome-linux/chrome' });
+/**
+ * Путь к браузеру не зашит: в CI его ставит сам Playwright и знает, где он
+ * лежит, а в песочнице разработки браузер уже стоит по своему адресу.
+ * Жёсткий путь работал ровно в одной из этих двух сред.
+ */
+const executablePath = process.env.CHROMIUM_PATH;
+const browser = await chromium.launch(executablePath ? { executablePath } : {});
 const failures = [];
 const check = (name, condition) => {
   console.log(`${condition ? '  ✓' : '  ✗'} ${name}`);
@@ -144,6 +150,21 @@ async function run(scheme) {
   check('кнопка не приглашает продублировать сделанное',
     !(await page.getByText('Напомнить через 2 дня').isVisible()));
   await page.screenshot({ path: `${OUT}/04-reminder-${scheme}.png` });
+
+  /*
+   * Перезагрузка страницы — это и есть выгрузка приложения из памяти:
+   * состояние процесса теряется целиком, остаётся только то, что успели
+   * записать. iOS выгружает фоновое приложение постоянно, поэтому для
+   * задачи, которая тянется днями, вернуться на свой экран — не удобство,
+   * а условие того, что ей вообще можно пользоваться.
+   */
+  console.log(`[${scheme}] возврат на прерванный экран`);
+  await page.reload({ waitUntil: 'networkidle' });
+  await page.waitForTimeout(1200);
+  check('после перезапуска открыт тот же экран',
+    await page.getByRole('heading', { name: 'Виза: Италия' }).isVisible());
+  check('состояние экрана не откатилось',
+    (await page.getByText('Фото 35×45 мм, 2 шт').evaluate((el) => getComputedStyle(el).textDecorationLine)).includes('line-through'));
 
   // Скриншот-тест реестра: все 53 компонента на одном экране.
   console.log(`[${scheme}] реестр компонентов`);

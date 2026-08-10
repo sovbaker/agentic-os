@@ -41,6 +41,7 @@ import {
 } from './src/api';
 import { HomeScreen } from './src/HomeScreen';
 import { pushTokens } from './src/push/index';
+import { loadScreen, saveScreen } from './src/session';
 import { loadToken, saveToken } from './src/storage';
 import { speech } from './src/speech/index';
 
@@ -141,18 +142,36 @@ export default function App(): React.JSX.Element {
    * работал, и восстановить её было нечем. Возврат — не украшение, а условие
    * того, что задачу вообще можно закрыть.
    */
-  const [history, setHistory] = useState<Array<{ spec: UISpec; data: Record<string, unknown> }>>([]);
+  const [history, setHistory] = useState<Array<{ spec: UISpec; data: Record<string, unknown>; jobId: string | null }>>([]);
+
+  /**
+   * Задача, к которой относится открытый экран.
+   *
+   * Мини-аппа, открытая из ленты, живёт своей жизнью — но её действия
+   * («ответить на вопрос», «подтвердить намерение») адресованы конкретной
+   * задаче. Без этого `task.answer` из переоткрытого экрана падал бы,
+   * даже когда текст ответа доезжает.
+   */
+  const [currentJobId, setCurrentJobId] = useState<string | null>(null);
 
   const session = useRef<{ stop: () => void } | null>(null);
 
+  /**
+   * Успел ли человек что-то открыть сам, пока с сервера ехал прошлый экран.
+   * Восстановление не имеет права перебить то, что пользователь уже делает.
+   */
+  const touched = useRef(false);
+
   const openScreen = useCallback(
-    (next: UISpec, nextData: Record<string, unknown>) => {
-      setHistory((prev) => (spec ? [...prev, { spec, data }] : prev));
+    (next: UISpec, nextData: Record<string, unknown>, nextJobId: string | null = null) => {
+      touched.current = true;
+      setHistory((prev) => (spec ? [...prev, { spec, data, jobId: currentJobId }] : prev));
       setSpec(next);
       setData(nextData);
+      setCurrentJobId(nextJobId);
       setState({});
     },
-    [spec, data]
+    [spec, data, currentJobId]
   );
 
   const goBack = useCallback(() => {
@@ -161,14 +180,27 @@ export default function App(): React.JSX.Element {
       if (last) {
         setSpec(last.spec);
         setData(last.data);
+        setCurrentJobId(last.jobId);
       } else {
         setSpec(null);
         setData({});
+        setCurrentJobId(null);
       }
       setState({});
       return prev.slice(0, -1);
     });
   }, []);
+
+  /**
+   * Запоминаем, где человек остановился.
+   *
+   * Пишется указатель, а не экран: содержимое живёт на сервере, и хранить
+   * его копию значит однажды показать её вместо настоящего состояния.
+   */
+  useEffect(() => {
+    if (!ready) return;
+    void saveScreen(spec ? { specId: spec.id, jobId: currentJobId } : null);
+  }, [ready, spec, currentJobId]);
 
   /**
    * Режим просмотра реестра: ?dev=registry в вебе. Нужен, чтобы снимать
@@ -196,6 +228,11 @@ export default function App(): React.JSX.Element {
         }
         setReady(true);
 
+        // Экран, на котором человека прервали. Не блокирует появление
+        // ленты: если сеть медленная, лучше показать хоть что-то и
+        // подставить мини-аппу, когда она доедет.
+        void restoreScreen();
+
         // Лента и онбординг грузятся параллельно: ни одно из них
         // не должно блокировать появление экрана.
         void refreshFeed();
@@ -212,6 +249,30 @@ export default function App(): React.JSX.Element {
     })();
   }, []);
 
+  /**
+   * Возврат на прерванный экран.
+   *
+   * Спека берётся с сервера по идентификатору, а не из локальной копии:
+   * задача за это время могла сдвинуться, и показать вчерашнее состояние
+   * хуже, чем не показать ничего. Экрана нет (ушёл срок, это была
+   * эфемерная страница вроде приватности) — просто остаёмся на ленте.
+   */
+  const restoreScreen = useCallback(async () => {
+    const saved = await loadScreen();
+    if (!saved) return;
+
+    try {
+      const { spec: restored, data: restoredData } = await fetchMiniApp(saved.specId);
+      if (touched.current) return;
+
+      setSpec(restored);
+      setData(restoredData);
+      setCurrentJobId(saved.jobId);
+    } catch {
+      await saveScreen(null);
+    }
+  }, []);
+
   const refreshFeed = useCallback(async () => {
     try {
       const data = await fetchFeed();
@@ -226,11 +287,12 @@ export default function App(): React.JSX.Element {
     const trimmed = text.trim();
     if (!trimmed || busy) return;
 
+    touched.current = true;
     setBusy(true);
     setError(null);
     setInput('');
     // Новая задача — новая ветка: прошлые экраны остаются достижимы возвратом.
-    setHistory((prev) => (spec ? [...prev, { spec, data }] : prev));
+    setHistory((prev) => (spec ? [...prev, { spec, data, jobId: currentJobId }] : prev));
     setSpec(null);
     setData({});
     setState({});
@@ -243,6 +305,7 @@ export default function App(): React.JSX.Element {
             break;
           case 'job':
             setJob(event.job);
+            setCurrentJobId(event.job.id);
             break;
           case 'spec':
             setSpec(event.spec);
@@ -270,20 +333,39 @@ export default function App(): React.JSX.Element {
       setBusy(false);
       setStatus(null);
     }
-  }, [busy, spec, data]);
+  }, [busy, spec, data, currentJobId]);
 
   const runTool = useCallback(
-    async (action: Extract<UIAction, { kind: 'tool' }>, confirmed: boolean) => {
+    async (
+      action: Extract<UIAction, { kind: 'tool' }>,
+      confirmed: boolean,
+      payload?: unknown
+    ) => {
       try {
-        const res = await dispatchAction(action, {
-          specId: spec?.id,
-          jobId: job?.id,
-          confirmed,
-        });
+        /*
+         * Полезная нагрузка узла — часть аргументов, а не отдельная сущность.
+         * Раньше `fire` её передавал, а оболочка выбрасывала: поле ввода
+         * отправляло `task.answer` с пустыми аргументами, и ответ человека
+         * на уточняющий вопрос терялся между экраном и сервером.
+         */
+        const args = typeof payload === 'string' ? { ...action.args, text: payload } : action.args;
+
+        const res = await dispatchAction(
+          { ...action, args },
+          {
+            specId: spec?.id,
+            jobId: job?.id ?? currentJobId ?? undefined,
+            confirmed,
+          }
+        );
 
         if (res.needsConfirmation) {
           const text = res.confirmationText ?? 'Подтвердить действие?';
-          setConfirm({ action, text, danger: /удал|безвозвратн|нельзя восстанов/i.test(text) });
+          setConfirm({
+            action: { ...action, args },
+            text,
+            danger: /удал|безвозвратн|нельзя восстанов/i.test(text),
+          });
           return;
         }
         if (res.dataPatch) setData((prev) => ({ ...prev, ...res.dataPatch }));
@@ -295,7 +377,7 @@ export default function App(): React.JSX.Element {
         setError('Не получилось выполнить. Проверь связь и попробуй ещё раз.');
       }
     },
-    [spec?.id, job?.id]
+    [spec?.id, job?.id, currentJobId]
   );
 
   /**
@@ -305,10 +387,10 @@ export default function App(): React.JSX.Element {
    * и вернуться к вчерашнему чек-листу можно было только перенабрав фразу.
    */
   const openMiniApp = useCallback(
-    async (id: string) => {
+    async (id: string, jobId: string | null = null) => {
       try {
         const screen = await fetchMiniApp(id);
-        openScreen(screen.spec, screen.data);
+        openScreen(screen.spec, screen.data, jobId);
       } catch {
         setError('Не удалось открыть — попробуй ещё раз.');
       }
@@ -320,10 +402,10 @@ export default function App(): React.JSX.Element {
     (action: UIAction, payload?: unknown) => {
       switch (action.kind) {
         case 'tool':
-          void runTool(action, false);
+          void runTool(action, false, payload);
           break;
         case 'submit':
-          void runTool({ kind: 'tool', tool: action.tool, args: {}, optimistic: false }, false);
+          void runTool({ kind: 'tool', tool: action.tool, args: {}, optimistic: false }, false, payload);
           break;
         case 'setState':
           setState((prev) => ({ ...prev, [action.path]: payload ?? action.value }));
@@ -434,7 +516,7 @@ export default function App(): React.JSX.Element {
               chosenArchetypes={chosenArchetypes}
               inboxAddress={inboxAddress}
               onExample={(text) => void submit(text, 'text')}
-              onCard={(card) => (card.specId ? void openMiniApp(card.specId) : setStatus(card.body))}
+              onCard={(card) => (card.specId ? void openMiniApp(card.specId, card.jobId) : setStatus(card.body))}
               onToggleArchetype={(id) => {
                 const next = chosenArchetypes.includes(id)
                   ? chosenArchetypes.filter((c) => c !== id)

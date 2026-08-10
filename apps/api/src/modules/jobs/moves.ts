@@ -48,8 +48,10 @@ export async function computeMoves(jobId: string, now = new Date()): Promise<Mov
       awaiting_who: string | null;
       awaiting_since: Date | null;
       awaiting_usually: string | null;
+      intent: { title?: string; after?: string; discloses?: string } | null;
     }>(
-      'SELECT pending_question, awaiting_who, awaiting_since, awaiting_usually FROM job WHERE id = $1',
+      `SELECT pending_question, awaiting_who, awaiting_since, awaiting_usually, intent
+         FROM job WHERE id = $1`,
       [jobId]
     ),
   ]);
@@ -63,11 +65,24 @@ export async function computeMoves(jobId: string, now = new Date()): Promise<Mov
   }));
 
   /**
-   * Намерение. Пока задача умеет задать ровно один вопрос, поэтому и
-   * намерение одно: честнее показать одно настоящее, чем выдумать список.
+   * Намерение. Пока задача умеет остановиться ровно на одном решении,
+   * поэтому и намерение одно: честнее показать одно настоящее, чем
+   * выдумать список.
+   *
+   * Дифф берётся из объявленного намерения, если оно есть, и остаётся
+   * пустым, если его нет: показать «было → станет» с выдуманными
+   * сторонами хуже, чем не показать ничего.
    */
   const intentMoves = job?.pending_question
-    ? [{ id: jobId, title: job.pending_question, before: '', after: '', discloses: '' }]
+    ? [
+        {
+          id: jobId,
+          title: job.intent?.title ?? job.pending_question,
+          before: '',
+          after: job.intent?.after ?? '',
+          discloses: job.intent?.discloses ?? '',
+        },
+      ]
     : [];
 
   const awaitingMoves =

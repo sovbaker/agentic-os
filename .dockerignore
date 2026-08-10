@@ -1,0 +1,15 @@
+# В образ едет только то, что нужно серверу.
+node_modules
+**/node_modules
+apps/mobile
+.git
+.github
+.expo
+**/dist
+docs
+scripts
+.impeccable
+.claude
+*.log
+.env
+.env.local

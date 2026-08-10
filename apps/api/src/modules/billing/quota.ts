@@ -68,8 +68,17 @@ export interface QuotaVerdict {
 
 async function monthTaskCount(userId: string): Promise<number> {
   const row = await queryOne<{ c: string }>(
+    /*
+     * Упавшие задачи не считаются.
+     *
+     * Пять задач в месяц — это пять попыток получить пользу, а не пять
+     * запусков. Человек, у которого всё упало, потратил месяц и не получил
+     * ничего: брать с него ещё и лимит — значит наказывать за наш отказ.
+     */
     `SELECT count(*)::text AS c FROM job
-      WHERE user_id = $1 AND created_at >= date_trunc('month', now())`,
+      WHERE user_id = $1
+        AND created_at >= date_trunc('month', now())
+        AND status <> 'failed'`,
     [userId]
   );
   return Number(row?.c ?? 0);

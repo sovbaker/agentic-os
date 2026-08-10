@@ -1,0 +1,11 @@
+{
+  "//": "Скрипты тоже проверяются типами: smoke-llm импортирует модули сервера, и молча разъехаться с ними он не должен.",
+  "extends": "../tsconfig.base.json",
+  "compilerOptions": {
+    "types": ["node"],
+    "paths": {
+      "@agentic-os/contracts": ["../packages/contracts/src/index.ts"]
+    }
+  },
+  "include": ["**/*.ts"]
+}

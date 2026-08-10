@@ -6,11 +6,12 @@ import { judge } from '../orchestrator/critic';
 import { quarantine } from '../orchestrator/quarantine';
 import { createLlm, type LlmPort } from '../orchestrator/llm';
 import { ingestFacts } from '../memory/graph';
-import { execTool, manifestOf, type ToolResult } from '../tools/index';
+import { execTool, manifestOf, type ExecOutcome } from '../tools/index';
 import { publish } from './bus';
 import {
   addArtifact,
   chargeBudget,
+  claimJob,
   claimJobs,
   completedByKey,
   extendLease,
@@ -19,8 +20,11 @@ import {
   markStepFailed,
   markStepRunning,
   newWorkerId,
+  markStepPending,
   releaseJob,
   runnableSteps,
+  setAwaiting,
+  setIntent,
   setStatus,
   stepsOf,
 } from './store';
@@ -95,7 +99,7 @@ async function executeStep(
   job: Job,
   step: JobStep & { title: string },
   specId: string | undefined
-): Promise<{ result: ToolResult; storable: StoredResult }> {
+): Promise<{ result: ExecOutcome; storable: StoredResult }> {
   const manifest = manifestOf(step.tool);
   const args = await resolveArgs(job.id, step.args);
 
@@ -105,7 +109,7 @@ async function executeStep(
     args
   );
 
-  let result: ToolResult = outcome;
+  let result: ExecOutcome = outcome;
 
   if (outcome.untrusted) {
     const cleaned = await quarantine({
@@ -158,6 +162,30 @@ async function executeStep(
   return { result, storable };
 }
 
+
+/**
+ * Что именно изменится — человеческим языком, из аргументов шага.
+ *
+ * Дифф намерения нельзя выдумывать: показать «было → станет» с пустыми
+ * сторонами хуже, чем не показать ничего. Здесь берётся ровно то, что
+ * реально уйдёт в инструмент.
+ */
+function describeArgs(args: Record<string, unknown>): string {
+  const parts: string[] = [];
+  for (const [key, value] of Object.entries(args)) {
+    if (value === null || value === undefined || typeof value === 'object') continue;
+    parts.push(`${key}: ${String(value).slice(0, 60)}`);
+  }
+  return parts.slice(0, 3).join(' · ');
+}
+
+/** Что из этого покинет наш контур. Пустая строка — значит ничего. */
+function discloseOf(args: Record<string, unknown>): string {
+  const outward = ['to', 'email', 'phone', 'text', 'message', 'body'];
+  const named = Object.keys(args).filter((k) => outward.includes(k));
+  return named.length > 0 ? named.join(', ') : '';
+}
+
 /** Один проход по задаче: выполняем все шаги, готовые к исполнению. */
 async function advanceJob(job: Job, workerId: string): Promise<void> {
   const all = await stepsOf(job.id);
@@ -178,11 +206,19 @@ async function advanceJob(job: Job, workerId: string): Promise<void> {
       continue;
     }
 
-    await markStepRunning(step.id);
+    /*
+     * Переход `pending → running` выигрывает ровно один исполнитель.
+     * Проиграл — значит шаг уже взял кто-то другой, и повторять его
+     * побочный эффект нельзя.
+     */
+    if (!(await markStepRunning(step.id))) {
+      log.info('шаг уже взят другим исполнителем', { jobId: job.id, idx: step.idx });
+      continue;
+    }
     await extendLease(job.id, workerId);
     publish(job.id, { type: 'status', phase: `step:${step.idx}`, text: step.title });
 
-    let result: ToolResult;
+    let result: ExecOutcome;
     let storable: StoredResult;
     try {
       const executed = await traced(
@@ -204,6 +240,30 @@ async function advanceJob(job: Job, workerId: string): Promise<void> {
       return;
     }
 
+    /*
+     * Шаг требует подтверждения человека.
+     *
+     * Потолок доверия MVP — «делает с подтверждением», и вот его исполнение
+     * в плане: задача не проваливается, а останавливается и ОБЪЯВЛЯЕТ
+     * намерение — что именно собирается сделать и что уйдёт наружу.
+     * Раньше такой шаг просто падал с «не получилось», потому что
+     * `needsConfirmation` неотличим от ошибки по коду возврата.
+     */
+    if (result.needsConfirmation) {
+      await markStepPending(step.id);
+      await setStatus(job.id, 'waiting_user', {
+        pendingQuestion: result.confirmationText ?? `Подтверди: ${step.title}`,
+      });
+      await setIntent(job.id, {
+        title: step.title,
+        after: describeArgs(step.args),
+        discloses: manifestOf(step.tool)?.returnsUntrusted === false ? discloseOf(step.args) : '',
+      });
+      publish(job.id, { type: 'message', text: result.confirmationText ?? `Нужно твоё подтверждение: ${step.title}` });
+      publish(job.id, { type: 'done', jobId: job.id });
+      return;
+    }
+
     const cost = COST_BY_HINT[manifestOf(step.tool)?.costHint ?? 'cheap'] ?? 0.5;
     const budget = await chargeBudget(job.id, cost);
 
@@ -219,6 +279,9 @@ async function advanceJob(job: Job, workerId: string): Promise<void> {
 
     if (verdict.kind === 'accept') {
       await markStepDone(step.id, storable);
+
+      // Ход перешёл к третьей стороне — задача это запоминает.
+      if (result.awaiting) await setAwaiting(job.id, result.awaiting);
 
       if (result.spec) {
         specId = result.spec.id;
@@ -395,8 +458,31 @@ export function startWorker(intervalMs = 1000, proactiveIntervalMs = 15 * 60_000
 }
 
 /** Прогнать задачу до остановки синхронно — для тестов и эвалов. */
+/**
+ * Довести задачу до конца в текущем процессе.
+ *
+ * Это второй драйвер исполнения: поток SSE ведёт задачу синхронно, чтобы
+ * пользователь видел прогресс. Он обязан работать под той же арендой, что
+ * и фоновый воркер, — иначе оба ведут одну задачу, и шаг длиннее секунды
+ * (поиск, планирование) исполняется дважды. Если аренду взять не удалось,
+ * задачу уже ведут: смотрим со стороны, а не исполняем параллельно.
+ */
 export async function runJobToCompletion(jobId: string, maxTicks = 25): Promise<Job | null> {
   const workerId = newWorkerId();
+
+  if (!(await claimJob(jobId, workerId))) {
+    log.info('задачу уже ведёт другой исполнитель', { jobId });
+    return getJob(jobId);
+  }
+
+  try {
+    return await drive(jobId, workerId, maxTicks);
+  } finally {
+    await releaseJob(jobId);
+  }
+}
+
+async function drive(jobId: string, workerId: string, maxTicks: number): Promise<Job | null> {
   for (let i = 0; i < maxTicks; i++) {
     const job = await getJob(jobId);
     if (!job) return null;
@@ -424,6 +510,7 @@ export async function runJobToCompletion(jobId: string, maxTicks = 25): Promise<
       return getJob(jobId);
     }
 
+    await extendLease(jobId, workerId);
     await advanceJob(job, workerId);
 
     /*
