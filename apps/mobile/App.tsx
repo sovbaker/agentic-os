@@ -38,6 +38,7 @@ import {
   registerPushToken,
   setToken,
   streamTurn,
+  type ApiError,
   type Archetype,
   type FeedCard,
 } from './src/api';
@@ -312,6 +313,9 @@ export default function App(): React.JSX.Element {
     setData({});
     setState({});
 
+    // Фраза, сказанная на открытом экране задачи, относится к этой задаче.
+    const attachedTo = currentJobId;
+
     try {
       const { promise } = streamTurn(trimmed, source, (event) => {
         switch (event.type) {
@@ -339,11 +343,22 @@ export default function App(): React.JSX.Element {
             void refreshFeed();
             break;
         }
-      });
+      }, attachedTo);
       await promise;
-    } catch {
-      // Пользователю не нужен текст исключения: ему нужно, что делать дальше.
-      setError('Связь с сервером прервалась. Задача не потеряна — попробуй ещё раз.');
+    } catch (err) {
+      const code = (err as ApiError).code;
+
+      if (code === 'consent_required') {
+        // Не ошибка, а незакрытый шаг: показываем согласие вместо
+        // сообщения про «связь прервалась», которая ни при чём.
+        void fetchConsent().then((c) => setConsent({ version: c.version, spec: c.spec }));
+      } else if (code) {
+        // Сервер объяснил отказ человеческим языком — незачем
+        // подменять объяснение общей фразой про связь.
+        setError((err as ApiError).message);
+      } else {
+        setError('Связь с сервером прервалась. Задача не потеряна — попробуй ещё раз.');
+      }
     } finally {
       setBusy(false);
       setStatus(null);

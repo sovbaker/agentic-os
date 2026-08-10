@@ -65,10 +65,22 @@ function parseFrames(buffer: string): { events: unknown[]; rest: string } {
   return { events, rest };
 }
 
+/** Ошибка с кодом от сервера — по нему вызывающий решает, что показать. */
+export interface ApiError extends Error {
+  code?: string;
+}
+
 export function streamTurn(
   text: string,
   source: 'text' | 'voice',
-  onEvent: (event: TurnEvent) => void
+  onEvent: (event: TurnEvent) => void,
+  /**
+   * Задача, к которой относится фраза. Без неё «а когда крайний срок?»,
+   * сказанное на открытом экране задачи, приезжает на сервер как новая
+   * задача: продолжения разговора не существует, потому что не с чем
+   * его связать.
+   */
+  jobId?: string | null
 ): { promise: Promise<void>; abort: () => void } {
   const xhr = new XMLHttpRequest();
   let consumed = 0;
@@ -94,12 +106,35 @@ export function streamTurn(
 
     xhr.onprogress = drain;
     xhr.onload = () => {
+      /*
+       * Отказ приезжает обычным JSON, а не потоком. Разбирать его рамками
+       * SSE бессмысленно: раньше такой ответ давал ноль событий и
+       * `resolve()` — то есть отказ сервера («нужно согласие», «слишком
+       * часто») выглядел как успешно закончившийся ход, после которого
+       * ничего не появилось.
+       */
+      if (xhr.status >= 400) {
+        let message = `Сервер ответил ${xhr.status}`;
+        let code: string | undefined;
+        try {
+          const body = JSON.parse(xhr.responseText) as { error?: string; code?: string };
+          if (body.error) message = body.error;
+          code = body.code;
+        } catch {
+          // Тело не JSON — остаётся общий текст со статусом.
+        }
+        const err: ApiError = new Error(message);
+        if (code) err.code = code;
+        reject(err);
+        return;
+      }
+
       drain();
       resolve();
     };
     xhr.onerror = () => reject(new Error('Сеть недоступна'));
     xhr.onabort = () => resolve();
-    xhr.send(JSON.stringify({ text, source }));
+    xhr.send(JSON.stringify({ text, source, ...(jobId ? { jobId } : {}) }));
   });
 
   return { promise, abort: () => xhr.abort() };
