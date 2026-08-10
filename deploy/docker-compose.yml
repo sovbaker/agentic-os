@@ -1,0 +1,104 @@
+# Развёртывание на одной машине.
+#
+# Для беты на 20–30 человек это правильный размер: один процесс API с
+# воркером внутри, одна база, один обратный прокси с автоматическим
+# сертификатом. Всё, что сложнее, добавляется тогда, когда упрётся, —
+# и упрётся не на этих числах.
+#
+# Управляемая база вместо своей: убрать сервис `db`, поставить
+# DATABASE_URL на адрес провайдера. Больше ничего менять не нужно —
+# API знает о базе только строку подключения.
+#
+#   cp .env.example .env   # и заполнить
+#   docker compose up -d --build
+#
+# Секреты живут в .env на машине и НЕ попадают в образ.
+
+name: agentic-os
+
+services:
+  db:
+    image: pgvector/pgvector:pg16
+    restart: unless-stopped
+    environment:
+      POSTGRES_USER: agentic
+      POSTGRES_PASSWORD: ${POSTGRES_PASSWORD:?нужен POSTGRES_PASSWORD в .env}
+      POSTGRES_DB: agentic_os
+    volumes:
+      - db-data:/var/lib/postgresql/data
+    healthcheck:
+      test: ['CMD-SHELL', 'pg_isready -U agentic -d agentic_os']
+      interval: 10s
+      timeout: 5s
+      retries: 10
+    # Наружу не смотрит: до базы можно достучаться только из этой сети.
+    expose:
+      - '5432'
+
+  api:
+    build:
+      context: ..
+      dockerfile: Dockerfile
+    restart: unless-stopped
+    depends_on:
+      db:
+        condition: service_healthy
+    environment:
+      DATABASE_URL: postgres://agentic:${POSTGRES_PASSWORD}@db:5432/agentic_os
+      NODE_ENV: production
+      LOG_LEVEL: ${LOG_LEVEL:-info}
+      ANTHROPIC_API_KEY: ${ANTHROPIC_API_KEY}
+      USD_RUB: ${USD_RUB:-90}
+      # На бете пользователь заводится сразу с доступом ко всему —
+      # иначе тестируется продукт без своей ретеншн-механики.
+      DEFAULT_PLAN: ${DEFAULT_PLAN:-pro}
+      INBOUND_SECRET: ${INBOUND_SECRET}
+      INBOUND_DOMAIN: ${INBOUND_DOMAIN}
+      METRICS_TOKEN: ${METRICS_TOKEN}
+      CORS_ORIGINS: ${CORS_ORIGINS:-https://app.example.ru}
+      EXPO_PUSH_ENABLED: ${EXPO_PUSH_ENABLED:-0}
+      SEARCH_API_URL: ${SEARCH_API_URL}
+      SEARCH_API_KEY: ${SEARCH_API_KEY}
+      SEARCH_API_KEY_HEADER: ${SEARCH_API_KEY_HEADER}
+    expose:
+      - '8787'
+
+  # HTTPS обязателен не для галочки: ATS в iOS по умолчанию запрещает
+  # обычный HTTP, и приложение просто не увидит сервер.
+  caddy:
+    image: caddy:2-alpine
+    restart: unless-stopped
+    depends_on:
+      - api
+    environment:
+      API_DOMAIN: ${API_DOMAIN:?нужен API_DOMAIN в .env}
+    ports:
+      - '80:80'
+      - '443:443'
+    volumes:
+      - ./Caddyfile:/etc/caddy/Caddyfile:ro
+      - caddy-data:/data
+      - caddy-config:/config
+
+  # Бэкап по расписанию. Без него «managed Postgres с бэкапами» из
+  # плана превращается в «Postgres», а личные данные людей — в то,
+  # что теряется вместе с одной машиной.
+  backup:
+    image: pgvector/pgvector:pg16
+    restart: unless-stopped
+    depends_on:
+      db:
+        condition: service_healthy
+    environment:
+      PGPASSWORD: ${POSTGRES_PASSWORD}
+      KEEP_DAYS: ${BACKUP_KEEP_DAYS:-14}
+    volumes:
+      - ./backup.sh:/usr/local/bin/backup.sh:ro
+      - backups:/backups
+    entrypoint: ['/bin/bash', '/usr/local/bin/backup.sh']
+
+volumes:
+  db-data:
+  caddy-data:
+  caddy-config:
+  backups:

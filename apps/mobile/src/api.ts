@@ -1,4 +1,4 @@
-import { TurnEvent, type ActionResponse, type MiniAppResponse, type UIAction } from '@agentic-os/contracts';
+import { TurnEvent, type ActionResponse, type MiniAppResponse, type UIAction, type UISpec } from '@agentic-os/contracts';
 
 /**
  * Клиент API.
@@ -180,6 +180,27 @@ export async function fetchPrivacy(): Promise<MiniAppResponse> {
   const res = await fetch(`${API_URL}/v1/privacy/screen`, { headers: headers() });
   if (!res.ok) throw new Error(`Экран приватности не загрузился: ${res.status}`);
   return (await res.json()) as MiniAppResponse;
+}
+
+/**
+ * Согласие. Текст и признак «нужно ли спрашивать» приходят с сервера:
+ * отметка живёт там же, где данные, и переустановка приложения её не
+ * стирает — иначе человека спрашивали бы заново на каждом устройстве,
+ * а доказательства согласия не было бы вовсе.
+ */
+export async function fetchConsent(): Promise<{ needed: boolean; version: string; spec: UISpec }> {
+  const res = await fetch(`${API_URL}/v1/consent`, { headers: headers() });
+  if (!res.ok) throw new Error(`Согласие не загрузилось: ${res.status}`);
+  return (await res.json()) as { needed: boolean; version: string; spec: UISpec };
+}
+
+export async function acceptConsent(version: string): Promise<void> {
+  const res = await fetch(`${API_URL}/v1/consent`, {
+    method: 'POST',
+    headers: headers(),
+    body: JSON.stringify({ version }),
+  });
+  if (!res.ok) throw new Error(`Согласие не записалось: ${res.status}`);
 }
 
 export async function registerPushToken(token: string): Promise<void> {

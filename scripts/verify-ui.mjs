@@ -66,6 +66,19 @@ async function run(scheme) {
 
   await page.goto(`http://localhost:${PORT}/`, { waitUntil: 'networkidle' });
 
+  /*
+   * Согласие. Сервер не примет ход без него — то есть без этого экрана
+   * приложение вообще не работает, и проверять его нужно первым.
+   */
+  console.log(`\n[${scheme}] согласие`);
+  await page.waitForTimeout(600);
+  check('согласие спрашивают до первого хода', await page.getByText('Три вещи честно').isVisible());
+  check('сказано, куда уходят слова', await page.getByText('Anthropic', { exact: false }).isVisible());
+  await page.screenshot({ path: `${OUT}/00-consent-${scheme}.png`, fullPage: true });
+  await page.getByText('Понятно, начнём').click();
+  await page.waitForTimeout(600);
+  check('после согласия экран больше не держит', !(await page.getByText('Три вещи честно').isVisible()));
+
   console.log(`\n[${scheme}] стартовый экран`);
   check('заголовок онбординга виден', await page.getByText('Что тебя сейчас грузит?').isVisible());
   // Первый запуск показывает одно решение, остальное — за раскрытием.

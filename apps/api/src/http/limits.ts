@@ -113,7 +113,13 @@ export function identify(c: Context): string {
   const first = forwarded?.split(',')[0]?.trim();
   if (first) return `ip:${first}`;
 
-  return `ip:${getConnInfo(c).remote.address ?? 'unknown'}`;
+  try {
+    return `ip:${getConnInfo(c).remote.address ?? 'unknown'}`;
+  } catch {
+    // Запрос без сокета — так выглядит вызов из теста через app.request().
+    // Ограничитель не имеет права ронять запрос из-за неизвестного адреса.
+    return 'ip:unknown';
+  }
 }
 
 const windows = new Map<BudgetName, Window>();

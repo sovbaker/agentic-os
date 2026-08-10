@@ -28,6 +28,7 @@ import { buildLifeMap } from '../modules/onboarding/lifemap';
 import { ensureInboxKey, importIcs, ingestEmail, factsFromCalendar } from '../modules/connectors/inbound';
 import { monthSpendRub } from '../modules/billing/cost';
 import { PLANS, TASK_BUDGET_RUB, checkQuota, getPlan } from '../modules/billing/quota';
+import { CONSENT_VERSION, acceptConsent, consentState } from '../modules/privacy/consent';
 import { deleteUser, exportUser, privacySummary } from '../modules/privacy/index';
 import { buildPrivacyScreen } from '../modules/privacy/screen';
 import * as metrics from '../modules/metrics/index';
@@ -131,6 +132,18 @@ export function createApp(): Hono {
     const user = c.get('user');
     const parsed = TurnRequest.safeParse(await c.req.json().catch(() => ({})));
     if (!parsed.success) return c.json({ error: 'Нужен непустой text', code: 'bad_request' }, 400);
+
+    /**
+     * Согласие проверяет сервер, а не только клиент.
+     *
+     * Экран в клиенте — вежливость; настоящий запрет живёт здесь. Иначе
+     * старая сборка, обход экрана или прямой запрос отправляли бы слова
+     * человека в модель без его согласия, а доказывать обратное пришлось
+     * бы нам.
+     */
+    if ((await consentState(user.userId)).needed) {
+      return c.json({ error: 'Нужно согласие', code: 'consent_required' }, 403);
+    }
 
     return streamSSE(c, async (stream) => {
       try {
@@ -479,6 +492,29 @@ export function createApp(): Hono {
   app.get('/v1/privacy', authMiddleware, async (c) => {
     const user = c.get('user');
     return c.json(await privacySummary(user.userId));
+  });
+
+  /**
+   * Согласие перед первым ходом. Отдельно от онбординга: онбординг можно
+   * пропустить, согласие — нет.
+   */
+  app.get('/v1/consent', authMiddleware, async (c) => {
+    const user = c.get('user');
+    return c.json(await consentState(user.userId));
+  });
+
+  app.post('/v1/consent', authMiddleware, async (c) => {
+    const user = c.get('user');
+    const body = (await c.req.json().catch(() => ({}))) as { version?: unknown };
+
+    // Принимаем ровно ту редакцию, которую показали. Расхождение версий
+    // означает, что человек согласился с другим текстом, а не с этим.
+    if (body.version !== CONSENT_VERSION) {
+      return c.json({ error: 'Текст согласия обновился', code: 'consent_stale', version: CONSENT_VERSION }, 409);
+    }
+
+    await acceptConsent(user.userId);
+    return c.json({ ok: true, version: CONSENT_VERSION });
   });
 
   /** Тот же экран, но как UISpec: формулировки правятся без релиза. */

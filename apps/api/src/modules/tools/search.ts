@@ -87,6 +87,13 @@ export class HttpSearch implements SearchPort {
   constructor(
     private readonly endpoint: string,
     private readonly apiKey: string,
+    /**
+     * Имя заголовка с ключом. Разное у провайдеров: `X-Subscription-Token`
+     * у Brave, `X-API-KEY` у Serper, `Authorization` у части остальных.
+     * Без этой настройки код разбирал ответ Serper, но авторизовался как
+     * в Brave — то есть заявленная сменяемость провайдера была на словах.
+     */
+    private readonly keyHeader: string = 'X-Subscription-Token',
     private readonly fallback: SearchPort = new StubSearch()
   ) {}
 
@@ -97,7 +104,7 @@ export class HttpSearch implements SearchPort {
       url.searchParams.set('count', String(limit));
 
       const res = await fetch(url, {
-        headers: { Accept: 'application/json', 'X-Subscription-Token': this.apiKey },
+        headers: { Accept: 'application/json', [this.keyHeader]: this.apiKey },
         signal: AbortSignal.timeout(15_000),
       });
       if (!res.ok) throw new Error(`search ${res.status}`);
@@ -130,6 +137,7 @@ export class HttpSearch implements SearchPort {
 export function createSearch(): SearchPort {
   const endpoint = process.env['SEARCH_API_URL'];
   const key = process.env['SEARCH_API_KEY'];
-  if (endpoint && key) return new HttpSearch(endpoint, key);
+  const header = process.env['SEARCH_API_KEY_HEADER'] ?? 'X-Subscription-Token';
+  if (endpoint && key) return new HttpSearch(endpoint, key, header);
   return new StubSearch();
 }

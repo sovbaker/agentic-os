@@ -13,8 +13,7 @@
       "bundleIdentifier": "ru.agenticos.app",
       "infoPlist": {
         "NSMicrophoneUsageDescription": "Микрофон нужен, чтобы можно было надиктовать задачу голосом.",
-        "NSSpeechRecognitionUsageDescription": "Распознавание речи нужно, чтобы превратить надиктованную задачу в текст.",
-        "NSUserTrackingUsageDescription": "Мы не отслеживаем тебя между приложениями и не передаём данные рекламным сетям."
+        "NSSpeechRecognitionUsageDescription": "Распознавание речи нужно, чтобы превратить надиктованную задачу в текст."
       }
     },
     "android": {

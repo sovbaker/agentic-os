@@ -27,6 +27,8 @@ import { Icon, KITCHEN_SINK, REGISTRY, Renderer, TARGET, Tap, darkTheme, lightTh
 import {
   applyArchetypes,
   dispatchAction,
+  acceptConsent,
+  fetchConsent,
   fetchFeed,
   fetchLifeMap,
   fetchOnboarding,
@@ -134,6 +136,13 @@ export default function App(): React.JSX.Element {
   const [inboxAddress, setInboxAddress] = useState<string | null>(null);
 
   /**
+   * Согласие. Текст приходит с сервера, отметка ставится там же.
+   * Пока оно нужно, экран занимает всё: пропустить его нельзя, а
+   * показывать поверх ленты — значит предложить пользоваться, не читая.
+   */
+  const [consent, setConsent] = useState<{ version: string; spec: UISpec } | null>(null);
+
+  /**
    * Стек экранов.
    *
    * Раньше `setSpec(null)` существовал ровно в одном месте — внутри `submit()`, —
@@ -226,6 +235,12 @@ export default function App(): React.JSX.Element {
           setToken(token);
           await saveToken(token);
         }
+        // Согласие — до всего остального: сервер всё равно не примет ход
+        // без него, и узнать об этом на отказе хуже, чем спросить сразу.
+        void fetchConsent()
+          .then((c) => (c.needed ? setConsent({ version: c.version, spec: c.spec }) : undefined))
+          .catch(() => {});
+
         setReady(true);
 
         // Экран, на котором человека прервали. Не блокирует появление
@@ -474,6 +489,42 @@ export default function App(): React.JSX.Element {
     );
   }
 
+  /*
+    Согласие. Кнопка одна и она клиентская — не потому что её нельзя
+    описать спекой, а потому что её смысл не должен зависеть от того,
+    что сегодня прислал сервер: текст правится без релиза, согласие —
+    нет. Отказа рядом нет сознательно: альтернатива согласию —
+    не пользоваться, и рисовать вторую кнопку, которая ведёт в пустоту,
+    было бы враньём.
+  */
+  if (consent && !devRegistry) {
+    return (
+      <SafeAreaView style={{ flex: 1, backgroundColor: theme.colors.bg }}>
+        <StatusBar style={scheme === 'dark' ? 'light' : 'dark'} />
+        <View style={{ flex: 1 }}>
+          <Renderer spec={consent.spec} data={{}} state={{}} theme={theme} onAction={() => {}} />
+        </View>
+        <View style={styles.consentBar}>
+          <Tap
+            onPress={() => {
+              const version = consent.version;
+              // Экран убираем сразу: ждать сети, глядя на согласие,
+              // которое уже дано, — худшая секунда первого запуска.
+              setConsent(null);
+              void acceptConsent(version).catch(() => setConsent({ version, spec: consent.spec }));
+            }}
+            label="Понятно, начнём"
+            style={styles.consentBtn}
+          >
+            <Text style={textStyle(theme.font.body, theme.colors.accentText, { fontWeight: '700' })}>
+              Понятно, начнём
+            </Text>
+          </Tap>
+        </View>
+      </SafeAreaView>
+    );
+  }
+
   return (
     <SafeAreaView style={{ flex: 1, backgroundColor: theme.colors.bg }}>
       <StatusBar style={scheme === 'dark' ? 'light' : 'dark'} />
@@ -716,6 +767,20 @@ function makeStyles(theme: typeof lightTheme) {
       alignItems: 'center',
       justifyContent: 'center',
       backgroundColor: theme.colors.accent,
+    } as const,
+    consentBar: {
+      padding: theme.spacing(4),
+      borderTopWidth: 1,
+      borderTopColor: theme.colors.border,
+      backgroundColor: theme.colors.bg,
+    } as const,
+    consentBtn: {
+      minHeight: TARGET,
+      borderRadius: theme.radius.md,
+      alignItems: 'center',
+      justifyContent: 'center',
+      backgroundColor: theme.colors.accent,
+      paddingHorizontal: theme.spacing(4),
     } as const,
   };
 }
