@@ -139,7 +139,7 @@ export function HomeScreen({
               label={example}
               style={{
                 borderWidth: 1,
-                borderColor: theme.colors.border,
+                borderColor: theme.colors.control,
                 backgroundColor: theme.colors.surface,
                 borderRadius: theme.radius.md,
                 paddingHorizontal: theme.spacing(3.5),
@@ -179,7 +179,7 @@ export function HomeScreen({
                     paddingVertical: theme.spacing(2),
                     borderRadius: theme.radius.md,
                     borderWidth: 1,
-                    borderColor: active ? theme.colors.accent : theme.colors.border,
+                    borderColor: active ? theme.colors.accent : theme.colors.control,
                     backgroundColor: active ? `${theme.colors.accent}1A` : theme.colors.surface,
                   }}
                 >
@@ -210,15 +210,19 @@ export function HomeScreen({
           <View style={{ gap: theme.spacing(1) }}>
             <Tap onPress={onOpenLifeMap} label="Что я о тебе знаю" style={{ alignSelf: 'flex-start' }}>
               <View style={{ flexDirection: 'row', alignItems: 'center', gap: theme.spacing(2) }}>
-                <Text style={textStyle(theme.font.body, theme.colors.accent)}>Что я о тебе знаю</Text>
-                <Icon name="chevronRight" size={16} color={theme.colors.accent} />
+                <Text style={textStyle(theme.font.body, theme.colors.text, { textDecorationLine: 'underline' })}>
+                  Что я о тебе знаю
+                </Text>
+                <Icon name="chevronRight" size={16} color={theme.colors.textMuted} />
               </View>
             </Tap>
 
             <Tap onPress={onOpenPrivacy} label="Данные и приватность" style={{ alignSelf: 'flex-start' }}>
               <View style={{ flexDirection: 'row', alignItems: 'center', gap: theme.spacing(2) }}>
-                <Text style={textStyle(theme.font.body, theme.colors.accent)}>Данные и приватность</Text>
-                <Icon name="chevronRight" size={16} color={theme.colors.accent} />
+                <Text style={textStyle(theme.font.body, theme.colors.text, { textDecorationLine: 'underline' })}>
+                  Данные и приватность
+                </Text>
+                <Icon name="chevronRight" size={16} color={theme.colors.textMuted} />
               </View>
             </Tap>
 
@@ -228,10 +232,11 @@ export function HomeScreen({
                   Пересылай сюда чеки и подтверждения
                 </Text>
                 {/* Обход restricted scope: пользователь сам решает, что мы видим. */}
-                <Text selectable style={textStyle(theme.font.small, theme.colors.text)}>
+                {/* Адрес — реквизит, поэтому машинописью. Объяснение — речь. */}
+                <Text selectable style={textStyle(theme.font.micro, theme.colors.text)}>
                   {inboxAddress}
                 </Text>
-                <Text style={textStyle(theme.font.micro, theme.colors.textMuted)}>
+                <Text style={textStyle(theme.font.caption, theme.colors.textMuted)}>
                   Из письма я возьму только факты — срок, сумму, номер. Само письмо останется отдельно.
                 </Text>
               </View>

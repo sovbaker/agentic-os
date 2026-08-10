@@ -43,8 +43,19 @@ export async function buildPrivacyScreen(userId: string): Promise<PrivacyScreen>
           },
         ],
       },
+      /*
+       * Правило пустого прибора: ни один компонент не печатает 0 крупным
+       * кеглем. Пять нулей как первое, что видит человек на экране про
+       * доверие, характеризуют не продукт, а его самого.
+       */
+      {
+        type: 'text',
+        visibleIf: { ref: { source: 'data', path: 'hasData' }, op: 'eq', value: false },
+        props: { text: 'Пока ничего: я ещё не знаю о тебе ни одного факта и не сделал ни одного действия.', tone: 'muted' },
+      },
       {
         type: 'grid',
+        visibleIf: { ref: { source: 'data', path: 'hasData' }, op: 'eq', value: true },
         props: { columns: 2, gap: 4 },
         children: [
           { type: 'stat', props: { label: 'Фактов о тебе' }, bind: { value: { source: 'data', path: 'facts' } } },
@@ -59,6 +70,7 @@ export async function buildPrivacyScreen(userId: string): Promise<PrivacyScreen>
           { type: 'heading', props: { text: 'Недоверенное — отдельно', level: 2 } },
           {
             type: 'stat',
+            visibleIf: { ref: { source: 'data', path: 'hasQuarantine' }, op: 'eq', value: true },
             props: { label: 'Писем и страниц в карантине' },
             bind: { value: { source: 'data', path: 'quarantined' } },
           },
@@ -129,7 +141,7 @@ export async function buildPrivacyScreen(userId: string): Promise<PrivacyScreen>
     meta: {
       origin: 'catalog',
       graphRefs: [],
-      runtimeKeys: ['facts', 'episodes', 'jobs', 'actions', 'quarantined', 'planRows'],
+      runtimeKeys: ['facts', 'episodes', 'jobs', 'actions', 'quarantined', 'planRows', 'hasData', 'hasQuarantine'],
       shareable: false,
     },
     root,
@@ -145,6 +157,8 @@ export async function buildPrivacyScreen(userId: string): Promise<PrivacyScreen>
       jobs: summary.jobs,
       actions: summary.actions,
       quarantined: summary.quarantined,
+      hasData: summary.facts + summary.episodes + summary.jobs + summary.actions > 0,
+      hasQuarantine: summary.quarantined > 0,
       planRows: [
         { key: 'Тариф', value: plan === 'pro' ? 'Pro' : 'Бесплатный' },
         {

@@ -94,12 +94,15 @@ async function run(scheme) {
   check('удаление доступно', await page.getByText('Удалить все мои данные').isVisible());
   // Сетка 2×2 с зазором 4: раньше проценты складывались с пиксельным gap
   // и сетка молча схлопывалась в одну колонку.
+  // Правило пустого прибора: на пустом аккаунте вместо стены нулей — фраза.
+  check('пустой прибор не печатает нули',
+    await page.getByText('Пока ничего', { exact: false }).isVisible());
   const statsPerRow = await page.evaluate(() => {
     const nodes = [...document.querySelectorAll('div')].filter((d) => /Фактов о тебе|Записей в дневнике/.test(d.textContent ?? ''));
     const tops = new Set(nodes.map((n) => Math.round(n.getBoundingClientRect().top)));
     return nodes.length > 0 ? nodes.length - tops.size + 1 : 0;
   });
-  check('сетка приватности не схлопнулась в колонку', statsPerRow >= 2);
+  check('сетка приватности не схлопнулась в колонку', statsPerRow >= 2 || statsPerRow === 0);
   await page.screenshot({ path: `${OUT}/07-privacy-${scheme}.png`, fullPage: true });
   await page.goto(`http://localhost:${PORT}/`, { waitUntil: 'networkidle' });
 

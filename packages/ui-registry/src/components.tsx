@@ -2,6 +2,7 @@ import type { ReactNode } from 'react';
 import { Image, ScrollView, Text as RNText, TextInput, View } from 'react-native';
 import type { ComponentType, IconName } from '@agentic-os/contracts';
 import { Icon } from './Icon';
+import { Stamp } from './Stamp';
 import { Tap } from './Tap';
 import { TABULAR, TARGET, textStyle, toneColor, turnColor, type Theme, type Tone, type Turn } from './theme';
 
@@ -362,17 +363,13 @@ const listItem: Renderer = ({ props, theme, fire, hasAction }) => {
   const body = (
     <View style={{ flexDirection: 'row', alignItems: 'flex-start', gap: theme.spacing(3), paddingVertical: theme.spacing(2) }}>
       {showCheckbox ? (
-        <View
-          style={{
-            width: 24, height: 24, borderRadius: 12,
-            borderWidth: 2,
-            borderColor: checked ? theme.colors.success : theme.colors.border,
-            backgroundColor: checked ? theme.colors.success : 'transparent',
-            alignItems: 'center', justifyContent: 'center',
-            marginTop: 1,
-          }}
-        >
-          {checked ? <Icon name="check" size={16} color={theme.colors.surface} /> : null}
+        <View style={{ marginTop: 1 }}>
+          <Stamp
+            theme={theme}
+            done={checked}
+            color={checked ? theme.colors.success : theme.colors.control}
+            inkColor={theme.colors.surface}
+          />
         </View>
       ) : null}
 
@@ -413,7 +410,7 @@ const table: Renderer = ({ props, theme }) => {
       {headers.length > 0 ? (
         <View style={{ flexDirection: 'row', backgroundColor: theme.colors.surfaceAlt }}>
           {headers.map((h, i) => (
-            <RNText key={i} style={[textStyle(theme.font.micro, theme.colors.textMuted), { flex: 1, padding: theme.spacing(2.5) }]}>
+            <RNText key={i} style={[textStyle(theme.font.caption, theme.colors.textMuted), { flex: 1, padding: theme.spacing(2.5) }]}>
               {h}
             </RNText>
           ))}
@@ -493,7 +490,7 @@ const stat: Renderer = ({ props, theme }) => (
   <View style={{ gap: 2 }}>
     <RNText style={textStyle(theme.font.small, theme.colors.textMuted)}>{str(props['label'])}</RNText>
     <RNText style={[textStyle(theme.font.h2, toneColor(theme, tone(props['tone']))), TABULAR]}>{str(props['value'])}</RNText>
-    {str(props['hint']) ? <RNText style={textStyle(theme.font.micro, theme.colors.textMuted)}>{str(props['hint'])}</RNText> : null}
+    {str(props['hint']) ? <RNText style={textStyle(theme.font.caption, theme.colors.textMuted)}>{str(props['hint'])}</RNText> : null}
   </View>
 );
 
@@ -569,9 +566,31 @@ const calendar: Renderer = ({ props, theme }) => {
  */
 
 function turnRow(theme: Theme, turn: Turn, icon: IconName, filled: boolean, children: ReactNode): ReactNode {
+  /*
+   * Жёлоб очерёдности слева: в нём стоят только марки хода, текстовая
+   * колонка всегда начинается с одной и той же позиции. Фон появляется
+   * ровно там, где от человека чего-то ждут, — поэтому сколько на экране
+   * горячих блоков, столько дел висит на нём, и это видно с расстояния
+   * вытянутой руки.
+   */
+  const hot = turn === 'user';
   return (
-    <View style={{ flexDirection: 'row', gap: theme.spacing(3), alignItems: 'flex-start' }}>
-      {/* Жёлоб очерёдности: марка хода и ничего больше. */}
+    <View
+      style={{
+        flexDirection: 'row',
+        gap: theme.spacing(3),
+        alignItems: 'flex-start',
+        ...(hot
+          ? {
+              backgroundColor: theme.colors.surfaceHot,
+              borderWidth: 1,
+              borderColor: theme.colors.borderHot,
+              borderRadius: theme.radius.lg,
+              padding: theme.spacing(3.5),
+            }
+          : {}),
+      }}
+    >
       <View style={{ width: 20, alignItems: 'center', paddingTop: 3 }}>
         <Icon name={icon} size={18} color={turnColor(theme, turn)} filled={filled} />
       </View>
@@ -599,12 +618,12 @@ const agentDid: Renderer = ({ props, theme, fire, hasAction }) => {
         */}
         {hasAction('onUndo') && undoUntil ? (
           <Tap onPress={() => fire('onUndo')} label={`Отменить: ${title}`} slop>
-            <RNText style={textStyle(theme.font.micro, theme.colors.accent, { fontWeight: '700' })}>
+            <RNText style={textStyle(theme.font.caption, theme.colors.text, { fontWeight: '600', textDecorationLine: 'underline' })}>
               отменить · {undoUntil}
             </RNText>
           </Tap>
         ) : (
-          <RNText style={textStyle(theme.font.micro, theme.colors.textMuted)}>отменить уже нельзя</RNText>
+          <RNText style={textStyle(theme.font.caption, theme.colors.textMuted)}>отменить уже нельзя</RNText>
         )}
       </View>
     </>
@@ -624,7 +643,14 @@ const agentIntent: Renderer = ({ props, theme, fire, hasAction }) => {
   const after = str(props['after']);
   const discloses = str(props['discloses']);
 
-  return turnRow(theme, 'intent', 'ring', false, (
+  /*
+   * Ход человека — единственное горячее место на экране: фон означает
+   * «от тебя чего-то ждут». Пока подтверждения нет, это ход агента —
+   * «набрано, но не отпечатано», контур без цвета и без фона.
+   */
+  const mine = hasAction('onConfirm');
+
+  return turnRow(theme, mine ? 'user' : 'intent', mine ? 'diamond' : 'ring', mine, (
     <>
       <RNText style={textStyle(theme.font.h3, theme.colors.text)}>{title}</RNText>
 
@@ -644,7 +670,9 @@ const agentIntent: Renderer = ({ props, theme, fire, hasAction }) => {
           <View style={{ paddingTop: 2 }}>
             <Icon name="doc" size={14} color={theme.colors.warning} />
           </View>
-          <RNText style={[textStyle(theme.font.micro, theme.colors.warning), { flex: 1 }]}>Уйдёт наружу: {discloses}</RNText>
+          <RNText style={[textStyle(theme.font.caption, theme.colors.warning, { fontWeight: '600' }), { flex: 1 }]}>
+            Уйдёт наружу: {discloses}
+          </RNText>
         </View>
       ) : null}
 
@@ -665,7 +693,7 @@ const agentIntent: Renderer = ({ props, theme, fire, hasAction }) => {
               {str(props['confirmLabel'], 'Подтверждаю')}
             </RNText>
           </Tap>
-          <RNText style={textStyle(theme.font.micro, theme.colors.textMuted)}>
+          <RNText style={textStyle(theme.font.caption, theme.colors.textMuted)}>
             Пока не подтвердишь — ничего не отправляю
           </RNText>
         </View>
@@ -685,10 +713,10 @@ const awaiting: Renderer = ({ props, theme, fire, hasAction }) => {
       <RNText style={textStyle(theme.font.h3, theme.colors.text)}>Жду ответа: {who}</RNText>
       <View style={{ flexDirection: 'row', gap: theme.spacing(3), flexWrap: 'wrap', alignItems: 'center' }}>
         {since ? <RNText style={[textStyle(theme.font.micro, theme.colors.textMuted), TABULAR]}>с {since}</RNText> : null}
-        {usually ? <RNText style={textStyle(theme.font.micro, theme.colors.textMuted)}>обычно {usually}</RNText> : null}
+        {usually ? <RNText style={textStyle(theme.font.caption, theme.colors.textMuted)}>обычно {usually}</RNText> : null}
         {hasAction('onNudge') ? (
           <Tap onPress={() => fire('onNudge')} label={`Напомнить: ${who}`} slop>
-            <RNText style={textStyle(theme.font.micro, theme.colors.accent, { fontWeight: '700' })}>пнуть</RNText>
+            <RNText style={textStyle(theme.font.caption, theme.colors.text, { fontWeight: '600', textDecorationLine: 'underline' })}>пнуть</RNText>
           </Tap>
         ) : null}
       </View>
@@ -714,7 +742,7 @@ const sourceStamp: Renderer = ({ props, theme, fire, hasAction }) => {
     <View style={{ flexDirection: 'row', alignItems: 'center', gap: theme.spacing(2), flexWrap: 'wrap' }}>
       <View style={{ flexDirection: 'row', alignItems: 'center', gap: theme.spacing(1.5) }}>
         <Icon name={guessed ? 'ringDashed' : 'ring'} size={12} color={theme.colors.textMuted} filled={!guessed} />
-        <RNText style={textStyle(theme.font.micro, theme.colors.textMuted)}>{source}</RNText>
+        <RNText style={textStyle(theme.font.caption, theme.colors.textMuted)}>{source}</RNText>
       </View>
       <View
         style={{ flexDirection: 'row', gap: 2 }}
@@ -733,7 +761,7 @@ const sourceStamp: Renderer = ({ props, theme, fire, hasAction }) => {
       </View>
       {hasAction('onDispute') ? (
         <Tap onPress={() => fire('onDispute')} label="Это неверно" slop>
-          <RNText style={textStyle(theme.font.micro, theme.colors.accent, { fontWeight: '700' })}>это неверно</RNText>
+          <RNText style={textStyle(theme.font.caption, theme.colors.text, { fontWeight: '600', textDecorationLine: 'underline' })}>это неверно</RNText>
         </Tap>
       ) : null}
     </View>
@@ -757,7 +785,7 @@ function field(theme: Theme, children: ReactNode, labelText: string): ReactNode 
 function inputStyle(theme: Theme, multiline = false) {
   return {
     borderWidth: 1,
-    borderColor: theme.colors.border,
+    borderColor: theme.colors.control,
     borderRadius: theme.radius.md,
     backgroundColor: theme.colors.surfaceAlt,
     color: theme.colors.text,
@@ -840,8 +868,8 @@ function chips(
               paddingVertical: theme.spacing(2.5),
               borderRadius: theme.radius.md,
               borderWidth: 1,
-              borderColor: active ? theme.colors.accent : theme.colors.border,
-              backgroundColor: active ? `${theme.colors.accent}1A` : theme.colors.surfaceAlt,
+              borderColor: active ? theme.colors.accent : theme.colors.control,
+              backgroundColor: active ? `${theme.colors.accent}1A` : theme.colors.surface,
               flexDirection: 'row',
               alignItems: 'center',
               gap: theme.spacing(1.5),
@@ -899,7 +927,7 @@ const radioGroup: Renderer = ({ props, theme, fire }) => {
               style={{
                 width: 22, height: 22, borderRadius: 11,
                 borderWidth: 2,
-                borderColor: active ? theme.colors.accent : theme.colors.border,
+                borderColor: active ? theme.colors.accent : theme.colors.control,
                 alignItems: 'center', justifyContent: 'center',
               }}
             >
@@ -929,17 +957,12 @@ const checkbox: Renderer = ({ props, theme, fire }) => {
         Форма та же, что у пункта чек-листа: одно понятие — одна форма.
         Раньше здесь был оранжевый квадрат, а в списке зелёный круг.
       */}
-      <View
-        style={{
-          width: 24, height: 24, borderRadius: 12,
-          borderWidth: 2,
-          borderColor: checked ? theme.colors.success : theme.colors.border,
-          backgroundColor: checked ? theme.colors.success : 'transparent',
-          alignItems: 'center', justifyContent: 'center',
-        }}
-      >
-        {checked ? <Icon name="check" size={16} color={theme.colors.surface} /> : null}
-      </View>
+      <Stamp
+        theme={theme}
+        done={checked}
+        color={checked ? theme.colors.success : theme.colors.control}
+        inkColor={theme.colors.surface}
+      />
       <RNText style={[textStyle(theme.font.body, theme.colors.text), { flex: 1 }]}>{labelText}</RNText>
     </Tap>
   );
@@ -962,7 +985,7 @@ const toggle: Renderer = ({ props, theme, fire }) => {
           width: 48, height: 30, borderRadius: 15, padding: 3,
           backgroundColor: on ? theme.colors.success : theme.colors.surfaceAlt,
           borderWidth: 1,
-          borderColor: on ? theme.colors.success : theme.colors.border,
+          borderColor: on ? theme.colors.success : theme.colors.control,
           alignItems: on ? 'flex-end' : 'flex-start',
         }}
       >
@@ -974,7 +997,7 @@ const toggle: Renderer = ({ props, theme, fire }) => {
           style={{
             width: 22, height: 22, borderRadius: 11,
             backgroundColor: theme.colors.surface,
-            borderWidth: 1, borderColor: on ? theme.colors.success : theme.colors.textMuted,
+            borderWidth: 1, borderColor: on ? theme.colors.success : theme.colors.control,
           }}
         />
       </View>
@@ -1000,9 +1023,9 @@ const slider: Renderer = ({ props, theme, fire }) => {
       label={label}
       style={{
         width: TARGET, height: TARGET,
-        borderRadius: theme.radius.sm,
+        borderRadius: theme.radius.md,
         borderWidth: 1,
-        borderColor: theme.colors.border,
+        borderColor: theme.colors.control,
         alignItems: 'center', justifyContent: 'center',
         opacity: disabled ? 0.35 : 1,
       }}
@@ -1106,7 +1129,7 @@ const button: Renderer = ({ props, theme, fire }) => {
       style={{
         backgroundColor: bg,
         borderWidth: primary || danger ? 0 : 1,
-        borderColor: done ? `${theme.colors.success}55` : theme.colors.border,
+        borderColor: done ? theme.colors.control : theme.colors.control,
         borderRadius: theme.radius.md,
         paddingVertical: theme.spacing(3),
         paddingHorizontal: theme.spacing(5),
@@ -1134,8 +1157,10 @@ const link: Renderer = ({ props, theme, fire }) => {
   return (
     <Tap onPress={() => fire('onPress')} label={labelText} role="link" style={{ alignSelf: 'flex-start' }}>
       <View style={{ flexDirection: 'row', alignItems: 'center', gap: theme.spacing(1.5) }}>
-        <RNText style={textStyle(theme.font.body, theme.colors.accent, { fontWeight: '600' })}>{labelText}</RNText>
-        <Icon name="arrowRight" size={16} color={theme.colors.accent} />
+        <RNText style={textStyle(theme.font.body, theme.colors.text, { fontWeight: '600', textDecorationLine: 'underline' })}>
+          {labelText}
+        </RNText>
+        <Icon name="arrowRight" size={16} color={theme.colors.textMuted} />
       </View>
     </Tap>
   );
@@ -1312,7 +1337,7 @@ const comparisonTable: Renderer = ({ props, theme }) => {
               {recommended ? (
                 <View style={{ flexDirection: 'row', alignItems: 'center', gap: theme.spacing(1) }}>
                   <Icon name="check" size={14} color={theme.colors.success} />
-                  <RNText style={textStyle(theme.font.micro, theme.colors.success, { fontWeight: '700' })}>рекомендую</RNText>
+                  <RNText style={textStyle(theme.font.caption, theme.colors.success, { fontWeight: '700' })}>рекомендую</RNText>
                 </View>
               ) : null}
             </View>

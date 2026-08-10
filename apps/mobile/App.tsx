@@ -12,6 +12,16 @@ import {
   useColorScheme,
 } from 'react-native';
 import { StatusBar } from 'expo-status-bar';
+import { useFonts } from 'expo-font';
+/*
+ * Импорт по точному пути, а не из корня пакета: корневой индекс тянет все
+ * начертания семейства, и в сборку уезжали 50 файлов вместо пяти.
+ */
+import Bitter_700Bold from '@expo-google-fonts/bitter/700Bold/Bitter_700Bold.ttf';
+import Bitter_600SemiBold from '@expo-google-fonts/bitter/600SemiBold/Bitter_600SemiBold.ttf';
+import IBMPlexSans_400Regular from '@expo-google-fonts/ibm-plex-sans/400Regular/IBMPlexSans_400Regular.ttf';
+import IBMPlexSans_600SemiBold from '@expo-google-fonts/ibm-plex-sans/600SemiBold/IBMPlexSans_600SemiBold.ttf';
+import IBMPlexMono_500Medium from '@expo-google-fonts/ibm-plex-mono/500Medium/IBMPlexMono_500Medium.ttf';
 import type { Job, UIAction, UISpec } from '@agentic-os/contracts';
 import { Icon, KITCHEN_SINK, REGISTRY, Renderer, TARGET, Tap, darkTheme, lightTheme, textStyle } from '@agentic-os/ui-registry';
 import {
@@ -87,6 +97,23 @@ function ConfirmSheet({
 export default function App(): React.JSX.Element {
   const scheme = useColorScheme();
   const theme = scheme === 'dark' ? darkTheme : lightTheme;
+
+  /**
+   * Гарнитуры мира «Оттиск»: Bitter — голос печатного журнала, IBM Plex Sans —
+   * речь помощника, IBM Plex Mono — реквизит. Все три с кириллицей и OFL.
+   *
+   * Контракт холодного старта: до загрузки показываем пустую бумагу нужного
+   * цвета, а не текст системным гротеском. Системный гротеск как дисплейный
+   * голос — не запасной вариант, а провал: он мгновенно возвращает продукт
+   * к состоянию «любое приложение».
+   */
+  const [fontsReady] = useFonts({
+    Bitter_700Bold,
+    Bitter_600SemiBold,
+    IBMPlexSans_400Regular,
+    IBMPlexSans_600SemiBold,
+    IBMPlexMono_500Medium,
+  });
 
   const [ready, setReady] = useState(false);
   const [input, setInput] = useState('');
@@ -352,6 +379,11 @@ export default function App(): React.JSX.Element {
 
   const styles = useMemo(() => makeStyles(theme), [theme]);
 
+  if (!fontsReady) {
+    // Пустая бумага, а не спиннер и не текст чужой гарнитурой.
+    return <View style={{ flex: 1, backgroundColor: theme.colors.bg }} />;
+  }
+
   if (!ready && !error) {
     return (
       <View style={[styles.center, { backgroundColor: theme.colors.bg }]}>
@@ -381,7 +413,7 @@ export default function App(): React.JSX.Element {
               заголовок экрана: приглушённый и мелкий, чтобы не спорить
               с крупным заголовком в содержании.
             */}
-            <Text numberOfLines={1} style={[textStyle(theme.font.micro, theme.colors.textMuted), { flex: 1 }]}>
+            <Text numberOfLines={1} style={[textStyle(theme.font.caption, theme.colors.textMuted, { fontWeight: '600' }), { flex: 1 }]}>
               {spec.title}
             </Text>
           </View>
@@ -441,7 +473,7 @@ export default function App(): React.JSX.Element {
             </Text>
             {error ? (
               <Tap onPress={() => setError(null)} label="Закрыть сообщение" slop>
-                <Text style={textStyle(theme.font.micro, theme.colors.textMuted, { fontWeight: '700' })}>скрыть</Text>
+                <Text style={textStyle(theme.font.caption, theme.colors.textMuted, { fontWeight: '700' })}>скрыть</Text>
               </Tap>
             ) : null}
           </View>
@@ -505,7 +537,7 @@ export default function App(): React.JSX.Element {
               ...styles.sendBtn,
               backgroundColor: busy || input.trim() === '' ? theme.colors.surfaceAlt : theme.colors.accent,
               borderWidth: busy || input.trim() === '' ? 1 : 0,
-              borderColor: theme.colors.border,
+              borderColor: theme.colors.control,
             }}
           >
             <Icon
@@ -576,7 +608,7 @@ function makeStyles(theme: typeof lightTheme) {
       flexShrink: 1,
       backgroundColor: theme.colors.surfaceAlt,
       borderWidth: 1,
-      borderColor: theme.colors.border,
+      borderColor: theme.colors.control,
       borderRadius: theme.radius.md,
       paddingHorizontal: theme.spacing(3.5),
       paddingVertical: theme.spacing(3),
@@ -592,7 +624,7 @@ function makeStyles(theme: typeof lightTheme) {
       alignItems: 'center',
       justifyContent: 'center',
       borderWidth: 1,
-      borderColor: theme.colors.border,
+      borderColor: theme.colors.control,
     } as const,
     iconBtnActive: { backgroundColor: `${theme.colors.danger}22`, borderColor: theme.colors.danger } as const,
     sendBtn: {
