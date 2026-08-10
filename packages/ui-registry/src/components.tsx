@@ -1,7 +1,9 @@
 import type { ReactNode } from 'react';
-import { Image, Pressable, ScrollView, Text as RNText, TextInput, View } from 'react-native';
-import type { ComponentType } from '@agentic-os/contracts';
-import { toneColor, type Theme, type Tone } from './theme';
+import { Image, ScrollView, Text as RNText, TextInput, View } from 'react-native';
+import type { ComponentType, IconName } from '@agentic-os/contracts';
+import { Icon } from './Icon';
+import { Tap } from './Tap';
+import { TABULAR, TARGET, textStyle, toneColor, turnColor, type Theme, type Tone, type Turn } from './theme';
 
 /**
  * Реестр компонентов.
@@ -13,6 +15,10 @@ import { toneColor, type Theme, type Tone } from './theme';
  * Список закрыт в обе стороны: в перечислении контрактов ровно то, что
  * здесь реализовано. Компонент, объявленный, но не отрисованный, валидатор
  * пропустил бы, а пользователь увидел бы заглушку — поэтому таких нет.
+ *
+ * ВАЖНО: рендереры вызываются как функции, а не как JSX-элементы, поэтому
+ * хуков внутри них быть не может. Всё, что требует состояния или анимации,
+ * живёт в настоящих компонентах — `Tap`, `Icon` — и используется отсюда.
  */
 
 export interface ComponentProps {
@@ -40,6 +46,18 @@ const tone = (v: unknown): Tone => {
   return t === 'muted' || t === 'success' || t === 'warning' || t === 'danger' ? t : 'default';
 };
 
+const ICONS = new Set<string>([
+  'check', 'close', 'plus', 'minus',
+  'chevronLeft', 'chevronRight', 'chevronDown', 'arrowRight',
+  'dot', 'ring', 'ringDashed', 'diamond', 'square',
+  'clock', 'calendar', 'bell', 'flag', 'star',
+  'doc', 'home', 'car', 'plane', 'pill', 'bag', 'search', 'mic',
+]);
+
+/** Имя вне закрытого набора не рисуется ничем: молчание честнее чужого знака. */
+const iconName = (v: unknown, fallback: IconName): IconName =>
+  typeof v === 'string' && ICONS.has(v) ? (v as IconName) : fallback;
+
 interface Option {
   value: string;
   label: string;
@@ -58,14 +76,21 @@ const rows = (v: unknown): unknown[][] => (Array.isArray(v) ? v.map((r) => (Arra
 
 /* ---------------------------- раскладка ---------------------------- */
 
-const screen: Renderer = ({ theme, children }) => (
+const screen: Renderer = ({ props, theme, children }) => (
   <ScrollView
     style={{ flex: 1, backgroundColor: theme.colors.bg }}
     contentContainerStyle={{
       padding: theme.spacing(4),
       gap: theme.spacing(3),
-      paddingBottom: theme.spacing(12),
+      paddingBottom: theme.spacing(10),
     }}
+    /*
+     * Заголовок экрана объявлен на каждой спеке и раньше выбрасывался здесь.
+     * Из-за этого у продукта не было ни шапки, ни указания местоположения —
+     * а раз шапки нет, то и возврата некуда поместить. Он рисуется оболочкой,
+     * но объявляется тут: скринридер должен слышать, куда он попал.
+     */
+    accessibilityLabel={str(props['title']) || undefined}
   >
     {children}
   </ScrollView>
@@ -88,7 +113,9 @@ const row: Renderer = ({ props, theme, children }) => (
   <View
     style={{
       flexDirection: 'row',
-      alignItems: 'center',
+      // flex-start, а не center: строка с подсказкой и без неё вставали
+      // на разной базовой линии, и это было видно на реестре.
+      alignItems: str(props['align'], 'flex-start') as 'flex-start',
       flexWrap: bool(props['wrap']) ? 'wrap' : 'nowrap',
       gap: theme.spacing(num(props['gap'], 2)),
       justifyContent: str(props['justify'], 'flex-start') as 'flex-start',
@@ -98,24 +125,32 @@ const row: Renderer = ({ props, theme, children }) => (
   </View>
 );
 
-const grid: Renderer = ({ props, theme, children }) => (
-  <View
-    style={{
-      flexDirection: 'row',
-      flexWrap: 'wrap',
-      gap: theme.spacing(num(props['gap'], 2)),
-    }}
-  >
-    {/* Ширину задаём в процентах: колонок обычно 2, реже 3. */}
-    {Array.isArray(children)
-      ? children.map((child, i) => (
-          <View key={i} style={{ width: `${100 / num(props['columns'], 2) - 2}%` }}>
-            {child}
-          </View>
-        ))
-      : children}
-  </View>
-);
+/**
+ * Сетка.
+ *
+ * Раньше ширина считалась как `100/columns - 2%`, а зазор задавался пикселями
+ * на родителе. При `gap ≥ 4` (16 px) сумма превышала ширину контейнера, и
+ * сетка молча схлопывалась в одну колонку — экран приватности рендерился
+ * четырьмя полноширинными блоками вместо 2×2, а фикстура с `gap: 2` дефект
+ * не показывала. Проценты и пиксели больше не складываются: зазор живёт
+ * внутренними отступами ячеек.
+ */
+const grid: Renderer = ({ props, theme, children }) => {
+  const columns = Math.max(1, num(props['columns'], 2));
+  const half = theme.spacing(num(props['gap'], 2)) / 2;
+
+  return (
+    <View style={{ flexDirection: 'row', flexWrap: 'wrap', marginHorizontal: -half }}>
+      {Array.isArray(children)
+        ? children.map((child, i) => (
+            <View key={i} style={{ width: `${100 / columns}%`, paddingHorizontal: half, paddingBottom: half * 2 }}>
+              {child}
+            </View>
+          ))
+        : children}
+    </View>
+  );
+};
 
 const section: Renderer = ({ theme, children }) => <View style={{ gap: theme.spacing(2) }}>{children}</View>;
 
@@ -136,9 +171,9 @@ const card: Renderer = ({ props, theme, children, fire, hasAction }) => {
   );
   if (!hasAction('onPress')) return body;
   return (
-    <Pressable onPress={() => fire('onPress')} style={({ pressed }) => ({ opacity: pressed ? 0.7 : 1 })}>
+    <Tap onPress={() => fire('onPress')} label={str(props['title']) || undefined} quiet>
       {body}
-    </Pressable>
+    </Tap>
   );
 };
 
@@ -150,28 +185,23 @@ const spacer: Renderer = ({ props, theme }) => <View style={{ height: theme.spac
 
 const heading: Renderer = ({ props, theme }) => {
   const level = num(props['level'], 2);
-  const size = level === 1 ? theme.font.h1 : level === 2 ? theme.font.h2 : theme.font.h3;
+  const step = level === 1 ? theme.font.h1 : level === 2 ? theme.font.h2 : theme.font.h3;
   return (
-    <RNText style={{ fontSize: size, fontWeight: '700', color: theme.colors.text, lineHeight: size * 1.25 }}>
+    <RNText
+      accessibilityRole="header"
+      style={textStyle(step, theme.colors.text, level === 3 ? { fontWeight: '700' } : undefined)}
+    >
       {str(props['text'])}
     </RNText>
   );
 };
 
 const text: Renderer = ({ props, theme }) => (
-  <RNText
-    style={{
-      fontSize: theme.font.body,
-      color: toneColor(theme, tone(props['tone'])),
-      lineHeight: theme.font.body * 1.45,
-    }}
-  >
-    {str(props['text'])}
-  </RNText>
+  <RNText style={textStyle(theme.font.body, toneColor(theme, tone(props['tone'])))}>{str(props['text'])}</RNText>
 );
 
 const label: Renderer = ({ props, theme }) => (
-  <RNText style={{ fontSize: theme.font.small, color: theme.colors.textMuted, fontWeight: '600' }}>
+  <RNText style={textStyle(theme.font.small, theme.colors.textMuted, { fontWeight: '600' })}>
     {str(props['text'])}
   </RNText>
 );
@@ -182,7 +212,10 @@ const badge: Renderer = ({ props, theme }) => {
     <View
       style={{
         alignSelf: 'flex-start',
-        paddingHorizontal: theme.spacing(3),
+        flexDirection: 'row',
+        alignItems: 'center',
+        gap: theme.spacing(1.5),
+        paddingHorizontal: theme.spacing(2.5),
         paddingVertical: theme.spacing(1.5),
         borderRadius: theme.radius.sm,
         backgroundColor: `${color}1A`,
@@ -190,7 +223,11 @@ const badge: Renderer = ({ props, theme }) => {
         borderColor: `${color}40`,
       }}
     >
-      <RNText style={{ fontSize: theme.font.small, color, fontWeight: '600' }}>{str(props['text'])}</RNText>
+      {/* Значение никогда не передаётся одним цветом: у тона есть знак. */}
+      {tone(props['tone']) !== 'default' ? (
+        <Icon name={iconName(props['icon'], tone(props['tone']) === 'warning' ? 'clock' : 'dot')} size={14} color={color} />
+      ) : null}
+      <RNText style={textStyle(theme.font.small, color, { fontWeight: '700' })}>{str(props['text'])}</RNText>
     </View>
   );
 };
@@ -213,9 +250,11 @@ const markdown: Renderer = ({ props, theme }) => {
           return (
             <View key={bi} style={{ gap: theme.spacing(1) }}>
               {lines.map((line, li) => (
-                <View key={li} style={{ flexDirection: 'row', gap: theme.spacing(2) }}>
-                  <RNText style={{ color: theme.colors.textMuted }}>•</RNText>
-                  <RNText style={{ flex: 1, color: theme.colors.text, fontSize: theme.font.body, lineHeight: theme.font.body * 1.45 }}>
+                <View key={li} style={{ flexDirection: 'row', gap: theme.spacing(2), alignItems: 'flex-start' }}>
+                  <View style={{ paddingTop: 6 }}>
+                    <Icon name="dot" size={8} color={theme.colors.textMuted} />
+                  </View>
+                  <RNText style={[textStyle(theme.font.body, theme.colors.text), { flex: 1 }]}>
                     {line.replace(/^\s*[-*•]\s+/, '').replace(/\*\*(.+?)\*\*/g, '$1')}
                   </RNText>
                 </View>
@@ -224,7 +263,7 @@ const markdown: Renderer = ({ props, theme }) => {
           );
         }
         return (
-          <RNText key={bi} style={{ color: theme.colors.text, fontSize: theme.font.body, lineHeight: theme.font.body * 1.45 }}>
+          <RNText key={bi} style={textStyle(theme.font.body, theme.colors.text)}>
             {block.replace(/\*\*(.+?)\*\*/g, '$1')}
           </RNText>
         );
@@ -237,10 +276,13 @@ const markdown: Renderer = ({ props, theme }) => {
 
 const image: Renderer = ({ props, theme }) => {
   const uri = str(props['uri']);
+  const alt = str(props['alt']);
   if (!uri) return null;
   return (
     <Image
       source={{ uri }}
+      accessible
+      accessibilityLabel={alt || 'Изображение'}
       style={{
         width: '100%',
         height: num(props['height'], 180),
@@ -252,7 +294,14 @@ const image: Renderer = ({ props, theme }) => {
   );
 };
 
-const icon: Renderer = ({ props }) => <RNText style={{ fontSize: num(props['size'], 20) }}>{str(props['glyph'], '•')}</RNText>;
+const icon: Renderer = ({ props, theme }) => (
+  <Icon
+    name={iconName(props['name'], 'dot')}
+    size={num(props['size'], 20)}
+    color={toneColor(theme, tone(props['tone']))}
+    filled={bool(props['filled'])}
+  />
+);
 
 const avatar: Renderer = ({ props, theme }) => {
   const size = num(props['size'], 40);
@@ -266,6 +315,8 @@ const avatar: Renderer = ({ props, theme }) => {
 
   return (
     <View
+      accessible
+      accessibilityLabel={name}
       style={{
         width: size,
         height: size,
@@ -284,59 +335,72 @@ const avatar: Renderer = ({ props, theme }) => {
 
 /* ------------------------------ данные ----------------------------- */
 
-const list: Renderer = ({ theme, children }) => <View style={{ gap: theme.spacing(1) }}>{children}</View>;
-const checklist: Renderer = ({ theme, children }) => <View style={{ gap: theme.spacing(1) }}>{children}</View>;
+const list: Renderer = ({ theme, children }) => <View style={{ gap: theme.spacing(0.5) }}>{children}</View>;
+const checklist: Renderer = ({ props, theme, children }) => {
+  const done = num(props['done'], -1);
+  const total = num(props['total'], -1);
+  return (
+    <View style={{ gap: theme.spacing(0.5) }}>
+      {/* «2 из 6» — единственный дешёвый способ показать движение к цели. */}
+      {done >= 0 && total > 0 ? (
+        <RNText style={[textStyle(theme.font.micro, theme.colors.textMuted), TABULAR, { paddingBottom: theme.spacing(1) }]}>
+          {done} из {total}
+        </RNText>
+      ) : null}
+      {children}
+    </View>
+  );
+};
 
 const listItem: Renderer = ({ props, theme, fire, hasAction }) => {
   const checked = bool(props['checked']);
   const showCheckbox = 'checked' in props;
-  const pressable = hasAction('onPress');
   const subtitle = str(props['subtitle']);
   const trailing = str(props['trailing']);
+  const title = str(props['title']);
 
   const body = (
-    <View style={{ flexDirection: 'row', alignItems: 'flex-start', gap: theme.spacing(3), paddingVertical: theme.spacing(2.5) }}>
+    <View style={{ flexDirection: 'row', alignItems: 'flex-start', gap: theme.spacing(3), paddingVertical: theme.spacing(2) }}>
       {showCheckbox ? (
         <View
           style={{
-            width: 22,
-            height: 22,
-            borderRadius: 11,
+            width: 24, height: 24, borderRadius: 12,
             borderWidth: 2,
             borderColor: checked ? theme.colors.success : theme.colors.border,
             backgroundColor: checked ? theme.colors.success : 'transparent',
-            alignItems: 'center',
-            justifyContent: 'center',
+            alignItems: 'center', justifyContent: 'center',
             marginTop: 1,
           }}
         >
-          {checked ? <RNText style={{ color: theme.colors.surface, fontSize: 13, fontWeight: '800' }}>✓</RNText> : null}
+          {checked ? <Icon name="check" size={16} color={theme.colors.surface} /> : null}
         </View>
       ) : null}
 
       <View style={{ flex: 1, gap: 2 }}>
         <RNText
-          style={{
-            fontSize: theme.font.body,
-            color: checked ? theme.colors.textMuted : theme.colors.text,
+          style={textStyle(theme.font.body, checked ? theme.colors.textMuted : theme.colors.text, {
             textDecorationLine: checked ? 'line-through' : 'none',
-            lineHeight: theme.font.body * 1.4,
-          }}
+          })}
         >
-          {str(props['title'])}
+          {title}
         </RNText>
-        {subtitle ? <RNText style={{ fontSize: theme.font.small, color: theme.colors.textMuted }}>{subtitle}</RNText> : null}
+        {subtitle ? <RNText style={textStyle(theme.font.small, theme.colors.textMuted)}>{subtitle}</RNText> : null}
       </View>
 
-      {trailing ? <RNText style={{ fontSize: theme.font.small, color: theme.colors.textMuted }}>{trailing}</RNText> : null}
+      {trailing ? <RNText style={[textStyle(theme.font.small, theme.colors.textMuted), TABULAR]}>{trailing}</RNText> : null}
     </View>
   );
 
-  if (!pressable) return body;
+  if (!hasAction('onPress')) return body;
   return (
-    <Pressable onPress={() => fire('onPress')} style={({ pressed }) => ({ opacity: pressed ? 0.55 : 1 })}>
+    <Tap
+      onPress={() => fire('onPress')}
+      label={title}
+      role={showCheckbox ? 'checkbox' : 'button'}
+      {...(showCheckbox ? { checked } : {})}
+    >
       {body}
-    </Pressable>
+    </Tap>
   );
 };
 
@@ -349,10 +413,7 @@ const table: Renderer = ({ props, theme }) => {
       {headers.length > 0 ? (
         <View style={{ flexDirection: 'row', backgroundColor: theme.colors.surfaceAlt }}>
           {headers.map((h, i) => (
-            <RNText
-              key={i}
-              style={{ flex: 1, padding: theme.spacing(2.5), fontSize: theme.font.small, fontWeight: '700', color: theme.colors.textMuted }}
-            >
+            <RNText key={i} style={[textStyle(theme.font.micro, theme.colors.textMuted), { flex: 1, padding: theme.spacing(2.5) }]}>
               {h}
             </RNText>
           ))}
@@ -361,7 +422,7 @@ const table: Renderer = ({ props, theme }) => {
       {body.map((r, ri) => (
         <View key={ri} style={{ flexDirection: 'row', borderTopWidth: ri === 0 && headers.length === 0 ? 0 : 1, borderTopColor: theme.colors.border }}>
           {r.map((cell, ci) => (
-            <RNText key={ci} style={{ flex: 1, padding: theme.spacing(2.5), fontSize: theme.font.small, color: theme.colors.text }}>
+            <RNText key={ci} style={[textStyle(theme.font.small, theme.colors.text), TABULAR, { flex: 1, padding: theme.spacing(2.5) }]}>
               {str(cell)}
             </RNText>
           ))}
@@ -376,9 +437,9 @@ const keyValue: Renderer = ({ props, theme }) => {
   return (
     <View style={{ gap: theme.spacing(2) }}>
       {pairs.map((p, i) => (
-        <View key={i} style={{ flexDirection: 'row', justifyContent: 'space-between', gap: theme.spacing(3) }}>
-          <RNText style={{ fontSize: theme.font.small, color: theme.colors.textMuted, flex: 1 }}>{str(p.key)}</RNText>
-          <RNText style={{ fontSize: theme.font.small, color: theme.colors.text, fontWeight: '600', flex: 1, textAlign: 'right' }}>
+        <View key={i} style={{ flexDirection: 'row', justifyContent: 'space-between', gap: theme.spacing(3), alignItems: 'flex-start' }}>
+          <RNText style={[textStyle(theme.font.small, theme.colors.textMuted), { flex: 1 }]}>{str(p.key)}</RNText>
+          <RNText style={[textStyle(theme.font.small, theme.colors.text, { fontWeight: '600' }), TABULAR, { flex: 1, textAlign: 'right' }]}>
             {str(p.value)}
           </RNText>
         </View>
@@ -400,10 +461,11 @@ const chart: Renderer = ({ props, theme }) => {
   return (
     <View style={{ gap: theme.spacing(2) }}>
       {series.map((s, i) => (
-        <View key={i} style={{ gap: 4 }}>
-          <View style={{ flexDirection: 'row', justifyContent: 'space-between' }}>
-            <RNText style={{ fontSize: theme.font.small, color: theme.colors.textMuted }}>{s.label}</RNText>
-            <RNText style={{ fontSize: theme.font.small, color: theme.colors.text, fontWeight: '600' }}>{s.value}</RNText>
+        <View key={i} style={{ gap: 4 }} accessible accessibilityLabel={`${s.label}: ${s.value}`}>
+          <View style={{ flexDirection: 'row', justifyContent: 'space-between', gap: theme.spacing(2) }}>
+            {/* Ширина не фиксирована: при 200% кегля фиксированная колонка сталкивается. */}
+            <RNText style={[textStyle(theme.font.small, theme.colors.textMuted), { flex: 1 }]}>{s.label}</RNText>
+            <RNText style={[textStyle(theme.font.small, theme.colors.text, { fontWeight: '600' }), TABULAR]}>{s.value}</RNText>
           </View>
           <View style={{ height: 8, borderRadius: 4, backgroundColor: theme.colors.surfaceAlt, overflow: 'hidden' }}>
             <View style={{ width: `${(s.value / max) * 100}%`, height: '100%', backgroundColor: theme.colors.accent }} />
@@ -416,11 +478,10 @@ const chart: Renderer = ({ props, theme }) => {
 
 const progress: Renderer = ({ props, theme }) => {
   const value = Math.max(0, Math.min(1, num(props['value'], 0)));
+  const labelText = str(props['label']);
   return (
-    <View style={{ gap: 6 }}>
-      {str(props['label']) ? (
-        <RNText style={{ fontSize: theme.font.small, color: theme.colors.textMuted }}>{str(props['label'])}</RNText>
-      ) : null}
+    <View style={{ gap: 6 }} accessible accessibilityLabel={`${labelText} ${Math.round(value * 100)}%`}>
+      {labelText ? <RNText style={textStyle(theme.font.small, theme.colors.textMuted)}>{labelText}</RNText> : null}
       <View style={{ height: 10, borderRadius: 5, backgroundColor: theme.colors.surfaceAlt, overflow: 'hidden' }}>
         <View style={{ width: `${value * 100}%`, height: '100%', backgroundColor: theme.colors.success }} />
       </View>
@@ -430,13 +491,9 @@ const progress: Renderer = ({ props, theme }) => {
 
 const stat: Renderer = ({ props, theme }) => (
   <View style={{ gap: 2 }}>
-    <RNText style={{ fontSize: theme.font.small, color: theme.colors.textMuted }}>{str(props['label'])}</RNText>
-    <RNText style={{ fontSize: theme.font.h2, fontWeight: '700', color: toneColor(theme, tone(props['tone'])) }}>
-      {str(props['value'])}
-    </RNText>
-    {str(props['hint']) ? (
-      <RNText style={{ fontSize: theme.font.small, color: theme.colors.textMuted }}>{str(props['hint'])}</RNText>
-    ) : null}
+    <RNText style={textStyle(theme.font.small, theme.colors.textMuted)}>{str(props['label'])}</RNText>
+    <RNText style={[textStyle(theme.font.h2, toneColor(theme, tone(props['tone']))), TABULAR]}>{str(props['value'])}</RNText>
+    {str(props['hint']) ? <RNText style={textStyle(theme.font.micro, theme.colors.textMuted)}>{str(props['hint'])}</RNText> : null}
   </View>
 );
 
@@ -448,23 +505,15 @@ const timeline: Renderer = ({ props, theme }) => {
     <View style={{ gap: theme.spacing(3) }}>
       {items.map((item, i) => (
         <View key={i} style={{ flexDirection: 'row', gap: theme.spacing(3) }}>
-          <View style={{ alignItems: 'center' }}>
-            <View
-              style={{
-                width: 10,
-                height: 10,
-                borderRadius: 5,
-                marginTop: 5,
-                backgroundColor: bool(item.done) ? theme.colors.success : theme.colors.border,
-              }}
-            />
+          <View style={{ alignItems: 'center', width: 12 }}>
+            <View style={{ marginTop: 6 }}>
+              <Icon name={bool(item.done) ? 'dot' : 'ring'} size={12} color={bool(item.done) ? theme.colors.success : theme.colors.border} />
+            </View>
             {i < items.length - 1 ? <View style={{ width: 2, flex: 1, backgroundColor: theme.colors.border, marginTop: 4 }} /> : null}
           </View>
           <View style={{ flex: 1, paddingBottom: theme.spacing(1) }}>
-            <RNText style={{ color: theme.colors.text, fontSize: theme.font.body }}>{str(item.title)}</RNText>
-            {str(item.at) ? (
-              <RNText style={{ color: theme.colors.textMuted, fontSize: theme.font.small }}>{str(item.at)}</RNText>
-            ) : null}
+            <RNText style={textStyle(theme.font.body, theme.colors.text)}>{str(item.title)}</RNText>
+            {str(item.at) ? <RNText style={[textStyle(theme.font.micro, theme.colors.textMuted), TABULAR]}>{str(item.at)}</RNText> : null}
           </View>
         </View>
       ))}
@@ -482,7 +531,7 @@ const calendar: Renderer = ({ props, theme }) => {
     : [];
 
   if (events.length === 0) {
-    return <RNText style={{ color: theme.colors.textMuted, fontSize: theme.font.small }}>Событий нет</RNText>;
+    return <RNText style={textStyle(theme.font.small, theme.colors.textMuted)}>Событий нет</RNText>;
   }
 
   const fmt = (iso: string): string => {
@@ -496,17 +545,197 @@ const calendar: Renderer = ({ props, theme }) => {
     <View style={{ gap: theme.spacing(2) }}>
       {events.map((e, i) => (
         <View key={i} style={{ flexDirection: 'row', gap: theme.spacing(3), alignItems: 'flex-start' }}>
-          <RNText style={{ fontSize: theme.font.small, color: theme.colors.accent, fontWeight: '600', width: 96 }}>
+          <RNText style={[textStyle(theme.font.small, theme.colors.accent, { fontWeight: '600' }), TABULAR, { minWidth: 92 }]}>
             {fmt(str(e.startsAt))}
           </RNText>
           <View style={{ flex: 1 }}>
-            <RNText style={{ color: theme.colors.text, fontSize: theme.font.body }}>{str(e.title)}</RNText>
-            {str(e.location) ? (
-              <RNText style={{ color: theme.colors.textMuted, fontSize: theme.font.small }}>{str(e.location)}</RNText>
-            ) : null}
+            <RNText style={textStyle(theme.font.body, theme.colors.text)}>{str(e.title)}</RNText>
+            {str(e.location) ? <RNText style={textStyle(theme.font.small, theme.colors.textMuted)}>{str(e.location)}</RNText> : null}
           </View>
         </View>
       ))}
+    </View>
+  );
+};
+
+/* --------------------------- агентность ---------------------------- */
+
+/**
+ * Четыре компонента про то единственное, чем продукт отличается от списка дел.
+ *
+ * Ось у всех одна — чей сейчас ход. Три состояния из четырёх намеренно
+ * ахроматичны, цвет остаётся ровно одному — «твой ход», — и поэтому означает
+ * что-то, а не украшает.
+ */
+
+function turnRow(theme: Theme, turn: Turn, icon: IconName, filled: boolean, children: ReactNode): ReactNode {
+  return (
+    <View style={{ flexDirection: 'row', gap: theme.spacing(3), alignItems: 'flex-start' }}>
+      {/* Жёлоб очерёдности: марка хода и ничего больше. */}
+      <View style={{ width: 20, alignItems: 'center', paddingTop: 3 }}>
+        <Icon name={icon} size={18} color={turnColor(theme, turn)} filled={filled} />
+      </View>
+      <View style={{ flex: 1, gap: theme.spacing(1) }}>{children}</View>
+    </View>
+  );
+}
+
+/** «Я это сделал» — единица метрики TCFY и место, где закрывается задача. */
+const agentDid: Renderer = ({ props, theme, fire, hasAction }) => {
+  const title = str(props['title']);
+  const at = str(props['at']);
+  const undoUntil = str(props['undoUntil']);
+
+  return turnRow(theme, 'agent', 'dot', true, (
+    <>
+      <RNText accessibilityLabel={`Сделано: ${title}`} style={textStyle(theme.font.h3, theme.colors.text)}>
+        {title}
+      </RNText>
+      <View style={{ flexDirection: 'row', alignItems: 'center', gap: theme.spacing(3), flexWrap: 'wrap' }}>
+        {at ? <RNText style={[textStyle(theme.font.micro, theme.colors.textMuted), TABULAR]}>{at}</RNText> : null}
+        {/*
+          Отмена не исчезает молча: пока она есть — это действие с честным
+          сроком, когда истекла — приглушённая строка, а не пустота.
+        */}
+        {hasAction('onUndo') && undoUntil ? (
+          <Tap onPress={() => fire('onUndo')} label={`Отменить: ${title}`} slop>
+            <RNText style={textStyle(theme.font.micro, theme.colors.accent, { fontWeight: '700' })}>
+              отменить · {undoUntil}
+            </RNText>
+          </Tap>
+        ) : (
+          <RNText style={textStyle(theme.font.micro, theme.colors.textMuted)}>отменить уже нельзя</RNText>
+        )}
+      </View>
+    </>
+  ));
+};
+
+/**
+ * «Собираюсь сделать» — визуальная форма потолка доверия MVP.
+ *
+ * Показывает не «подтвердить действие?», а что именно изменится и что уйдёт
+ * наружу. Дифф без перечня уходящего — это про поля формы, а не про
+ * последствия.
+ */
+const agentIntent: Renderer = ({ props, theme, fire, hasAction }) => {
+  const title = str(props['title']);
+  const before = str(props['before']);
+  const after = str(props['after']);
+  const discloses = str(props['discloses']);
+
+  return turnRow(theme, 'intent', 'ring', false, (
+    <>
+      <RNText style={textStyle(theme.font.h3, theme.colors.text)}>{title}</RNText>
+
+      {before || after ? (
+        <View style={{ gap: 2, paddingVertical: theme.spacing(1) }}>
+          {before ? (
+            <RNText style={textStyle(theme.font.small, theme.colors.textMuted, { textDecorationLine: 'line-through' })}>
+              {before}
+            </RNText>
+          ) : null}
+          {after ? <RNText style={textStyle(theme.font.small, theme.colors.text, { fontWeight: '600' })}>{after}</RNText> : null}
+        </View>
+      ) : null}
+
+      {discloses ? (
+        <View style={{ flexDirection: 'row', gap: theme.spacing(2), alignItems: 'flex-start' }}>
+          <View style={{ paddingTop: 2 }}>
+            <Icon name="doc" size={14} color={theme.colors.warning} />
+          </View>
+          <RNText style={[textStyle(theme.font.micro, theme.colors.warning), { flex: 1 }]}>Уйдёт наружу: {discloses}</RNText>
+        </View>
+      ) : null}
+
+      {hasAction('onConfirm') ? (
+        <View style={{ gap: theme.spacing(1.5), paddingTop: theme.spacing(1) }}>
+          <Tap
+            onPress={() => fire('onConfirm')}
+            label={`Подтвердить: ${title}`}
+            style={{
+              backgroundColor: theme.colors.accent,
+              borderRadius: theme.radius.md,
+              paddingVertical: theme.spacing(3),
+              paddingHorizontal: theme.spacing(4),
+              alignItems: 'center',
+            }}
+          >
+            <RNText style={textStyle(theme.font.body, theme.colors.accentText, { fontWeight: '600' })}>
+              {str(props['confirmLabel'], 'Подтверждаю')}
+            </RNText>
+          </Tap>
+          <RNText style={textStyle(theme.font.micro, theme.colors.textMuted)}>
+            Пока не подтвердишь — ничего не отправляю
+          </RNText>
+        </View>
+      ) : null}
+    </>
+  ));
+};
+
+/** «Жду ответа от X» — состояние между «взял» и «сделал», которого не было вовсе. */
+const awaiting: Renderer = ({ props, theme, fire, hasAction }) => {
+  const who = str(props['who'], 'ответа');
+  const since = str(props['since']);
+  const usually = str(props['usually']);
+
+  return turnRow(theme, 'world', 'ringDashed', false, (
+    <>
+      <RNText style={textStyle(theme.font.h3, theme.colors.text)}>Жду ответа: {who}</RNText>
+      <View style={{ flexDirection: 'row', gap: theme.spacing(3), flexWrap: 'wrap', alignItems: 'center' }}>
+        {since ? <RNText style={[textStyle(theme.font.micro, theme.colors.textMuted), TABULAR]}>с {since}</RNText> : null}
+        {usually ? <RNText style={textStyle(theme.font.micro, theme.colors.textMuted)}>обычно {usually}</RNText> : null}
+        {hasAction('onNudge') ? (
+          <Tap onPress={() => fire('onNudge')} label={`Напомнить: ${who}`} slop>
+            <RNText style={textStyle(theme.font.micro, theme.colors.accent, { fontWeight: '700' })}>пнуть</RNText>
+          </Tap>
+        ) : null}
+      </View>
+    </>
+  ));
+};
+
+/**
+ * Атрибуция факта.
+ *
+ * В графе у каждого факта есть источник и уверенность, и до сих пор их
+ * приходилось протаскивать строкой в подзаголовок. Два независимых канала:
+ * КТО сказал и НАСКОЛЬКО уверенно — потому что модель различает семь
+ * источников и непрерывную уверенность, а одна заливка кодирует одно.
+ */
+const sourceStamp: Renderer = ({ props, theme, fire, hasAction }) => {
+  const source = str(props['source'], 'предположение');
+  const confidence = Math.max(0, Math.min(1, num(props['confidence'], 0.5)));
+  const segments = Math.max(1, Math.round(confidence * 3));
+  const guessed = confidence < 0.5;
+
+  return (
+    <View style={{ flexDirection: 'row', alignItems: 'center', gap: theme.spacing(2), flexWrap: 'wrap' }}>
+      <View style={{ flexDirection: 'row', alignItems: 'center', gap: theme.spacing(1.5) }}>
+        <Icon name={guessed ? 'ringDashed' : 'ring'} size={12} color={theme.colors.textMuted} filled={!guessed} />
+        <RNText style={textStyle(theme.font.micro, theme.colors.textMuted)}>{source}</RNText>
+      </View>
+      <View
+        style={{ flexDirection: 'row', gap: 2 }}
+        accessible
+        accessibilityLabel={`уверенность ${Math.round(confidence * 100)} процентов`}
+      >
+        {[0, 1, 2].map((i) => (
+          <View
+            key={i}
+            style={{
+              width: 10, height: 3, borderRadius: 2,
+              backgroundColor: i < segments ? theme.colors.textMuted : theme.colors.border,
+            }}
+          />
+        ))}
+      </View>
+      {hasAction('onDispute') ? (
+        <Tap onPress={() => fire('onDispute')} label="Это неверно" slop>
+          <RNText style={textStyle(theme.font.micro, theme.colors.accent, { fontWeight: '700' })}>это неверно</RNText>
+        </Tap>
+      ) : null}
     </View>
   );
 };
@@ -516,8 +745,9 @@ const calendar: Renderer = ({ props, theme }) => {
 function field(theme: Theme, children: ReactNode, labelText: string): ReactNode {
   return (
     <View style={{ gap: theme.spacing(1.5) }}>
+      {/* Подпись всегда НАД полем и всегда есть: placeholder не подпись. */}
       {labelText ? (
-        <RNText style={{ fontSize: theme.font.small, color: theme.colors.textMuted, fontWeight: '600' }}>{labelText}</RNText>
+        <RNText style={textStyle(theme.font.small, theme.colors.textMuted, { fontWeight: '600' })}>{labelText}</RNText>
       ) : null}
       {children}
     </View>
@@ -533,8 +763,9 @@ function inputStyle(theme: Theme, multiline = false) {
     color: theme.colors.text,
     paddingHorizontal: theme.spacing(3.5),
     paddingVertical: theme.spacing(3),
-    fontSize: theme.font.body,
-    minHeight: multiline ? 88 : undefined,
+    fontSize: theme.font.body.size,
+    lineHeight: theme.font.body.lineHeight,
+    minHeight: multiline ? 96 : TARGET,
     textAlignVertical: multiline ? ('top' as const) : ('center' as const),
   };
 }
@@ -546,6 +777,7 @@ const textField: Renderer = ({ props, theme, fire }) =>
       defaultValue={str(props['value'])}
       placeholder={str(props['placeholder'])}
       placeholderTextColor={theme.colors.textMuted}
+      accessibilityLabel={str(props['label']) || str(props['placeholder'])}
       onChangeText={(v) => fire('onChange', v)}
       onSubmitEditing={(e) => fire('onSubmit', e.nativeEvent.text)}
       style={inputStyle(theme)}
@@ -560,8 +792,10 @@ const textArea: Renderer = ({ props, theme, fire }) =>
       defaultValue={str(props['value'])}
       placeholder={str(props['placeholder'])}
       placeholderTextColor={theme.colors.textMuted}
+      accessibilityLabel={str(props['label']) || str(props['placeholder'])}
       multiline
       onChangeText={(v) => fire('onChange', v)}
+      onSubmitEditing={(e) => fire('onSubmit', e.nativeEvent.text)}
       style={inputStyle(theme, true)}
     />,
     str(props['label'])
@@ -574,6 +808,7 @@ const numberField: Renderer = ({ props, theme, fire }) =>
       defaultValue={str(props['value'])}
       placeholder={str(props['placeholder'])}
       placeholderTextColor={theme.colors.textMuted}
+      accessibilityLabel={str(props['label']) || str(props['placeholder'])}
       keyboardType="numeric"
       onChangeText={(v) => fire('onChange', Number(v.replace(',', '.')))}
       style={inputStyle(theme)}
@@ -586,16 +821,20 @@ function chips(
   theme: Theme,
   items: Option[],
   selected: readonly string[],
-  onPick: (value: string) => void
+  onPick: (value: string) => void,
+  role: 'checkbox' | 'radio' = 'radio'
 ): ReactNode {
   return (
     <View style={{ flexDirection: 'row', flexWrap: 'wrap', gap: theme.spacing(2) }}>
       {items.map((opt) => {
         const active = selected.includes(opt.value);
         return (
-          <Pressable
+          <Tap
             key={opt.value}
             onPress={() => onPick(opt.value)}
+            label={opt.label}
+            role={role}
+            checked={active}
             style={{
               paddingHorizontal: theme.spacing(3.5),
               paddingVertical: theme.spacing(2.5),
@@ -603,12 +842,17 @@ function chips(
               borderWidth: 1,
               borderColor: active ? theme.colors.accent : theme.colors.border,
               backgroundColor: active ? `${theme.colors.accent}1A` : theme.colors.surfaceAlt,
+              flexDirection: 'row',
+              alignItems: 'center',
+              gap: theme.spacing(1.5),
             }}
           >
-            <RNText style={{ color: active ? theme.colors.accent : theme.colors.text, fontSize: theme.font.small, fontWeight: active ? '700' : '400' }}>
+            {/* Выбор кодируется не только цветом: у выбранного есть знак. */}
+            {active ? <Icon name="check" size={14} color={theme.colors.accent} /> : null}
+            <RNText style={textStyle(theme.font.small, active ? theme.colors.accent : theme.colors.text, { fontWeight: active ? '700' : '400' })}>
               {opt.label}
             </RNText>
-          </Pressable>
+          </Tap>
         );
       })}
     </View>
@@ -624,8 +868,12 @@ const multiSelect: Renderer = ({ props, theme, fire }) => {
   const selected = Array.isArray(props['value']) ? (props['value'] as unknown[]).map((v) => str(v)) : [];
   return field(
     theme,
-    chips(theme, options(props['options']), selected, (v) =>
-      fire('onChange', selected.includes(v) ? selected.filter((s) => s !== v) : [...selected, v])
+    chips(
+      theme,
+      options(props['options']),
+      selected,
+      (v) => fire('onChange', selected.includes(v) ? selected.filter((s) => s !== v) : [...selected, v]),
+      'checkbox'
     ),
     str(props['label'])
   );
@@ -635,26 +883,30 @@ const radioGroup: Renderer = ({ props, theme, fire }) => {
   const selected = str(props['value']);
   return field(
     theme,
-    <View style={{ gap: theme.spacing(2) }}>
+    <View style={{ gap: theme.spacing(1) }}>
       {options(props['options']).map((opt) => {
         const active = opt.value === selected;
         return (
-          <Pressable key={opt.value} onPress={() => fire('onChange', opt.value)} style={{ flexDirection: 'row', alignItems: 'center', gap: theme.spacing(3) }}>
+          <Tap
+            key={opt.value}
+            onPress={() => fire('onChange', opt.value)}
+            label={opt.label}
+            role="radio"
+            checked={active}
+            style={{ flexDirection: 'row', alignItems: 'center', gap: theme.spacing(3) }}
+          >
             <View
               style={{
-                width: 20,
-                height: 20,
-                borderRadius: 10,
+                width: 22, height: 22, borderRadius: 11,
                 borderWidth: 2,
                 borderColor: active ? theme.colors.accent : theme.colors.border,
-                alignItems: 'center',
-                justifyContent: 'center',
+                alignItems: 'center', justifyContent: 'center',
               }}
             >
               {active ? <View style={{ width: 10, height: 10, borderRadius: 5, backgroundColor: theme.colors.accent }} /> : null}
             </View>
-            <RNText style={{ color: theme.colors.text, fontSize: theme.font.body }}>{opt.label}</RNText>
-          </Pressable>
+            <RNText style={[textStyle(theme.font.body, theme.colors.text), { flex: 1 }]}>{opt.label}</RNText>
+          </Tap>
         );
       })}
     </View>,
@@ -664,45 +916,69 @@ const radioGroup: Renderer = ({ props, theme, fire }) => {
 
 const checkbox: Renderer = ({ props, theme, fire }) => {
   const checked = bool(props['value']);
+  const labelText = str(props['label']);
   return (
-    <Pressable onPress={() => fire('onChange', !checked)} style={{ flexDirection: 'row', alignItems: 'center', gap: theme.spacing(3) }}>
+    <Tap
+      onPress={() => fire('onChange', !checked)}
+      label={labelText}
+      role="checkbox"
+      checked={checked}
+      style={{ flexDirection: 'row', alignItems: 'center', gap: theme.spacing(3) }}
+    >
+      {/*
+        Форма та же, что у пункта чек-листа: одно понятие — одна форма.
+        Раньше здесь был оранжевый квадрат, а в списке зелёный круг.
+      */}
       <View
         style={{
-          width: 22,
-          height: 22,
-          borderRadius: 6,
+          width: 24, height: 24, borderRadius: 12,
           borderWidth: 2,
-          borderColor: checked ? theme.colors.accent : theme.colors.border,
-          backgroundColor: checked ? theme.colors.accent : 'transparent',
-          alignItems: 'center',
-          justifyContent: 'center',
+          borderColor: checked ? theme.colors.success : theme.colors.border,
+          backgroundColor: checked ? theme.colors.success : 'transparent',
+          alignItems: 'center', justifyContent: 'center',
         }}
       >
-        {checked ? <RNText style={{ color: theme.colors.accentText, fontSize: 13, fontWeight: '800' }}>✓</RNText> : null}
+        {checked ? <Icon name="check" size={16} color={theme.colors.surface} /> : null}
       </View>
-      <RNText style={{ color: theme.colors.text, fontSize: theme.font.body, flex: 1 }}>{str(props['label'])}</RNText>
-    </Pressable>
+      <RNText style={[textStyle(theme.font.body, theme.colors.text), { flex: 1 }]}>{labelText}</RNText>
+    </Tap>
   );
 };
 
 const toggle: Renderer = ({ props, theme, fire }) => {
   const on = bool(props['value']);
+  const labelText = str(props['label']);
   return (
-    <Pressable onPress={() => fire('onChange', !on)} style={{ flexDirection: 'row', alignItems: 'center', gap: theme.spacing(3) }}>
-      <RNText style={{ color: theme.colors.text, fontSize: theme.font.body, flex: 1 }}>{str(props['label'])}</RNText>
+    <Tap
+      onPress={() => fire('onChange', !on)}
+      label={labelText}
+      role="switch"
+      checked={on}
+      style={{ flexDirection: 'row', alignItems: 'center', gap: theme.spacing(3) }}
+    >
+      <RNText style={[textStyle(theme.font.body, theme.colors.text), { flex: 1 }]}>{labelText}</RNText>
       <View
         style={{
-          width: 46,
-          height: 28,
-          borderRadius: 14,
-          padding: 3,
-          backgroundColor: on ? theme.colors.success : theme.colors.border,
+          width: 48, height: 30, borderRadius: 15, padding: 3,
+          backgroundColor: on ? theme.colors.success : theme.colors.surfaceAlt,
+          borderWidth: 1,
+          borderColor: on ? theme.colors.success : theme.colors.border,
           alignItems: on ? 'flex-end' : 'flex-start',
         }}
       >
-        <View style={{ width: 22, height: 22, borderRadius: 11, backgroundColor: theme.colors.surface }} />
+        {/*
+          Ручке нужна собственная граница: белая ручка на светлой дорожке
+          давала контраст 1.15:1, то есть выключенный тумблер был невидим.
+        */}
+        <View
+          style={{
+            width: 22, height: 22, borderRadius: 11,
+            backgroundColor: theme.colors.surface,
+            borderWidth: 1, borderColor: on ? theme.colors.success : theme.colors.textMuted,
+          }}
+        />
       </View>
-    </Pressable>
+    </Tap>
   );
 };
 
@@ -717,41 +993,38 @@ const slider: Renderer = ({ props, theme, fire }) => {
   const value = Math.max(min, Math.min(max, num(props['value'], min)));
   const ratio = max === min ? 0 : (value - min) / (max - min);
 
-  const button = (glyph: string, next: number, disabled: boolean): ReactNode => (
-    <Pressable
+  const stepper = (name: IconName, next: number, disabled: boolean, label: string): ReactNode => (
+    <Tap
       disabled={disabled}
       onPress={() => fire('onChange', next)}
+      label={label}
       style={{
-        width: 36,
-        height: 36,
+        width: TARGET, height: TARGET,
         borderRadius: theme.radius.sm,
         borderWidth: 1,
         borderColor: theme.colors.border,
-        alignItems: 'center',
-        justifyContent: 'center',
+        alignItems: 'center', justifyContent: 'center',
         opacity: disabled ? 0.35 : 1,
       }}
     >
-      <RNText style={{ color: theme.colors.text, fontSize: 18 }}>{glyph}</RNText>
-    </Pressable>
+      <Icon name={name} size={20} color={theme.colors.text} />
+    </Tap>
   );
 
   return field(
     theme,
-    <View style={{ gap: theme.spacing(2) }}>
-      <View style={{ flexDirection: 'row', alignItems: 'center', gap: theme.spacing(3) }}>
-        {button('−', Math.max(min, value - step), value <= min)}
-        <View style={{ flex: 1, gap: 6 }}>
-          <View style={{ height: 8, borderRadius: 4, backgroundColor: theme.colors.surfaceAlt, overflow: 'hidden' }}>
-            <View style={{ width: `${ratio * 100}%`, height: '100%', backgroundColor: theme.colors.accent }} />
-          </View>
-          <RNText style={{ textAlign: 'center', color: theme.colors.text, fontWeight: '600', fontSize: theme.font.small }}>
-            {value}
-            {str(props['unit']) ? ` ${str(props['unit'])}` : ''}
-          </RNText>
+    <View style={{ flexDirection: 'row', alignItems: 'center', gap: theme.spacing(3) }}>
+      {stepper('minus', Math.max(min, value - step), value <= min, 'Уменьшить')}
+      <View style={{ flex: 1, gap: 6 }}>
+        <View style={{ height: 8, borderRadius: 4, backgroundColor: theme.colors.surfaceAlt, overflow: 'hidden' }}>
+          <View style={{ width: `${ratio * 100}%`, height: '100%', backgroundColor: theme.colors.accent }} />
         </View>
-        {button('+', Math.min(max, value + step), value >= max)}
+        <RNText style={[textStyle(theme.font.small, theme.colors.text, { fontWeight: '600' }), TABULAR, { textAlign: 'center' }]}>
+          {value}
+          {str(props['unit']) ? ` ${str(props['unit'])}` : ''}
+        </RNText>
       </View>
+      {stepper('plus', Math.min(max, value + step), value >= max, 'Увеличить')}
     </View>,
     str(props['label'])
   );
@@ -762,11 +1035,17 @@ const rating: Renderer = ({ props, theme, fire }) => {
   const max = num(props['max'], 5);
   return field(
     theme,
-    <View style={{ flexDirection: 'row', gap: theme.spacing(2) }}>
+    <View style={{ flexDirection: 'row', gap: theme.spacing(1) }}>
       {Array.from({ length: max }, (_, i) => (
-        <Pressable key={i} onPress={() => fire('onChange', i + 1)}>
-          <RNText style={{ fontSize: 26, color: i < value ? theme.colors.warning : theme.colors.border }}>★</RNText>
-        </Pressable>
+        <Tap
+          key={i}
+          onPress={() => fire('onChange', i + 1)}
+          label={`Оценка ${i + 1} из ${max}`}
+          selected={i < value}
+          style={{ width: TARGET, height: TARGET, alignItems: 'center', justifyContent: 'center' }}
+        >
+          <Icon name="star" size={24} color={i < value ? theme.colors.warning : theme.colors.border} />
+        </Tap>
       ))}
     </View>,
     str(props['label'])
@@ -774,65 +1053,73 @@ const rating: Renderer = ({ props, theme, fire }) => {
 };
 
 /** Выбор даты и времени — быстрыми вариантами. Нативный пикер требует dev build. */
-function quickPicker(
-  theme: Theme,
-  items: Option[],
-  value: string,
-  onPick: (v: string) => void,
-  labelText: string
-): ReactNode {
-  return field(theme, chips(theme, items, value ? [value] : [], onPick), labelText);
-}
-
 const datePicker: Renderer = ({ props, theme, fire }) => {
   const custom = options(props['options']);
   const items =
     custom.length > 0
       ? custom
-      : [0, 1, 2, 7, 14, 30].map((days) => {
+      : // Четыре варианта, а не шесть: больше четырёх — уже не выбор, а список.
+        [0, 1, 7, 30].map((days) => {
           const d = new Date(Date.now() + days * 86_400_000);
           return {
             value: d.toISOString().slice(0, 10),
-            label:
-              days === 0 ? 'сегодня' : days === 1 ? 'завтра' : new Intl.DateTimeFormat('ru-RU', { day: 'numeric', month: 'short' }).format(d),
+            label: days === 0 ? 'сегодня' : days === 1 ? 'завтра' : new Intl.DateTimeFormat('ru-RU', { day: 'numeric', month: 'short' }).format(d),
           };
         });
-  return quickPicker(theme, items, str(props['value']), (v) => fire('onChange', v), str(props['label'], 'Дата'));
+  return field(theme, chips(theme, items, str(props['value']) ? [str(props['value'])] : [], (v) => fire('onChange', v)), str(props['label'], 'Дата'));
 };
 
 const timePicker: Renderer = ({ props, theme, fire }) => {
   const custom = options(props['options']);
-  const items = custom.length > 0 ? custom : ['09:00', '12:00', '15:00', '18:00', '20:00'].map((t) => ({ value: t, label: t }));
-  return quickPicker(theme, items, str(props['value']), (v) => fire('onChange', v), str(props['label'], 'Время'));
+  const items = custom.length > 0 ? custom : ['09:00', '13:00', '18:00', '21:00'].map((t) => ({ value: t, label: t }));
+  return field(theme, chips(theme, items, str(props['value']) ? [str(props['value'])] : [], (v) => fire('onChange', v)), str(props['label'], 'Время'));
 };
 
 /* ----------------------------- действия ---------------------------- */
 
+/**
+ * Кнопка.
+ *
+ * Три состояния вместо одного. Раньше после выполнения кнопка не менялась и
+ * оставалась активной: это приглашало второе нажатие и дублирующее действие,
+ * а закрытие задачи выглядело как строка системного лога.
+ */
 const button: Renderer = ({ props, theme, fire }) => {
   const variant = str(props['variant'], 'primary');
-  const disabled = bool(props['disabled']);
-  const primary = variant === 'primary';
-  const danger = variant === 'danger';
+  const state = str(props['state'], 'idle');
+  const done = state === 'done';
+  const pending = state === 'pending';
+  const disabled = bool(props['disabled']) || done || pending;
+
+  const primary = variant === 'primary' && !done;
+  const danger = variant === 'danger' && !done;
+
+  const bg = done ? `${theme.colors.success}1A` : danger ? theme.colors.danger : primary ? theme.colors.accent : 'transparent';
+  const fg = done ? theme.colors.success : danger ? theme.colors.dangerText : primary ? theme.colors.accentText : theme.colors.text;
+  const labelText = done ? str(props['doneLabel'], 'Готово') : pending ? str(props['pendingLabel'], 'Делаю…') : str(props['label'], 'Действие');
 
   return (
-    <Pressable
+    <Tap
       disabled={disabled}
       onPress={() => fire('onPress')}
-      style={({ pressed }) => ({
-        backgroundColor: danger ? theme.colors.danger : primary ? theme.colors.accent : 'transparent',
+      label={labelText}
+      style={{
+        backgroundColor: bg,
         borderWidth: primary || danger ? 0 : 1,
-        borderColor: theme.colors.border,
+        borderColor: done ? `${theme.colors.success}55` : theme.colors.border,
         borderRadius: theme.radius.md,
-        paddingVertical: theme.spacing(3.5),
+        paddingVertical: theme.spacing(3),
         paddingHorizontal: theme.spacing(5),
+        flexDirection: 'row',
         alignItems: 'center',
-        opacity: disabled ? 0.4 : pressed ? 0.8 : 1,
-      })}
+        justifyContent: 'center',
+        gap: theme.spacing(2),
+        opacity: bool(props['disabled']) && !done ? 0.55 : 1,
+      }}
     >
-      <RNText style={{ color: primary || danger ? theme.colors.accentText : theme.colors.text, fontSize: theme.font.body, fontWeight: '600' }}>
-        {str(props['label'], 'Действие')}
-      </RNText>
-    </Pressable>
+      {done ? <Icon name="check" size={18} color={theme.colors.success} /> : null}
+      <RNText style={textStyle(theme.font.body, fg, { fontWeight: '600' })}>{labelText}</RNText>
+    </Tap>
   );
 };
 
@@ -842,94 +1129,157 @@ const buttonGroup: Renderer = ({ theme, children }) => (
   </View>
 );
 
-const link: Renderer = ({ props, theme, fire }) => (
-  <Pressable onPress={() => fire('onPress')}>
-    <RNText style={{ color: theme.colors.accent, fontSize: theme.font.body, textDecorationLine: 'underline' }}>
-      {str(props['label'], str(props['url']))}
-    </RNText>
-  </Pressable>
-);
+const link: Renderer = ({ props, theme, fire }) => {
+  const labelText = str(props['label'], str(props['url']));
+  return (
+    <Tap onPress={() => fire('onPress')} label={labelText} role="link" style={{ alignSelf: 'flex-start' }}>
+      <View style={{ flexDirection: 'row', alignItems: 'center', gap: theme.spacing(1.5) }}>
+        <RNText style={textStyle(theme.font.body, theme.colors.accent, { fontWeight: '600' })}>{labelText}</RNText>
+        <Icon name="arrowRight" size={16} color={theme.colors.accent} />
+      </View>
+    </Tap>
+  );
+};
 
 /* --------------------------- обратная связь ------------------------ */
 
 const alert: Renderer = ({ props, theme }) => {
-  const color = toneColor(theme, tone(props['tone']) === 'default' ? 'warning' : tone(props['tone']));
+  const t = tone(props['tone']) === 'default' ? 'warning' : tone(props['tone']);
+  const color = toneColor(theme, t);
   return (
     <View
+      accessibilityRole="alert"
       style={{
+        flexDirection: 'row',
+        gap: theme.spacing(2.5),
         borderRadius: theme.radius.md,
         borderWidth: 1,
         borderColor: `${color}55`,
         backgroundColor: `${color}12`,
         padding: theme.spacing(3.5),
-        gap: 4,
       }}
     >
-      {str(props['title']) ? <RNText style={{ color, fontWeight: '700', fontSize: theme.font.small }}>{str(props['title'])}</RNText> : null}
-      <RNText style={{ color: theme.colors.text, fontSize: theme.font.small, lineHeight: theme.font.small * 1.45 }}>
-        {str(props['text'])}
-      </RNText>
+      <View style={{ paddingTop: 2 }}>
+        <Icon name={t === 'success' ? 'check' : t === 'danger' ? 'close' : 'flag'} size={18} color={color} />
+      </View>
+      <View style={{ flex: 1, gap: 2 }}>
+        {str(props['title']) ? (
+          <RNText style={textStyle(theme.font.small, color, { fontWeight: '700' })}>{str(props['title'])}</RNText>
+        ) : null}
+        <RNText style={textStyle(theme.font.small, theme.colors.text)}>{str(props['text'])}</RNText>
+      </View>
     </View>
   );
 };
 
 const emptyState: Renderer = ({ props, theme, children }) => (
   <View style={{ alignItems: 'center', gap: theme.spacing(2), paddingVertical: theme.spacing(8) }}>
-    <RNText style={{ fontSize: 32 }}>{str(props['glyph'], '🗂')}</RNText>
-    <RNText style={{ color: theme.colors.text, fontSize: theme.font.body, fontWeight: '600' }}>{str(props['title'], 'Пока пусто')}</RNText>
+    <Icon name={iconName(props['icon'], 'doc')} size={32} color={theme.colors.border} />
+    <RNText style={textStyle(theme.font.h3, theme.colors.text)}>{str(props['title'], 'Пока пусто')}</RNText>
     {str(props['text']) ? (
-      <RNText style={{ color: theme.colors.textMuted, fontSize: theme.font.small, textAlign: 'center' }}>{str(props['text'])}</RNText>
+      <RNText style={[textStyle(theme.font.small, theme.colors.textMuted), { textAlign: 'center' }]}>{str(props['text'])}</RNText>
     ) : null}
     {children}
   </View>
 );
 
-const skeleton: Renderer = ({ props, theme }) => (
-  <View style={{ gap: theme.spacing(2) }}>
-    {Array.from({ length: num(props['lines'], 3) }, (_, i) => (
-      <View
-        key={i}
-        style={{
-          height: 14,
-          borderRadius: 7,
-          backgroundColor: theme.colors.surfaceAlt,
-          width: i === num(props['lines'], 3) - 1 ? '60%' : '100%',
-        }}
-      />
-    ))}
-  </View>
-);
-
-const confirmSheet: Renderer = ({ props, theme, fire }) => (
-  <View
-    style={{
-      borderRadius: theme.radius.lg,
-      borderWidth: 1,
-      borderColor: theme.colors.border,
-      backgroundColor: theme.colors.surface,
-      padding: theme.spacing(4),
-      gap: theme.spacing(3),
-    }}
-  >
-    <RNText style={{ color: theme.colors.text, fontSize: theme.font.body, fontWeight: '600' }}>
-      {str(props['text'], 'Подтвердить действие?')}
-    </RNText>
-    <View style={{ flexDirection: 'row', gap: theme.spacing(2) }}>
-      <Pressable
-        onPress={() => fire('onConfirm')}
-        style={{ flex: 1, backgroundColor: theme.colors.accent, borderRadius: theme.radius.md, paddingVertical: theme.spacing(3), alignItems: 'center' }}
-      >
-        <RNText style={{ color: theme.colors.accentText, fontWeight: '600' }}>{str(props['confirmLabel'], 'Подтверждаю')}</RNText>
-      </Pressable>
-      <Pressable
-        onPress={() => fire('onCancel')}
-        style={{ flex: 1, borderWidth: 1, borderColor: theme.colors.border, borderRadius: theme.radius.md, paddingVertical: theme.spacing(3), alignItems: 'center' }}
-      >
-        <RNText style={{ color: theme.colors.text }}>{str(props['cancelLabel'], 'Отмена')}</RNText>
-      </Pressable>
+const skeleton: Renderer = ({ props, theme }) => {
+  const lines = num(props['lines'], 3);
+  return (
+    <View style={{ gap: theme.spacing(2) }} accessible accessibilityLabel="Загружаю">
+      {Array.from({ length: lines }, (_, i) => (
+        <View
+          key={i}
+          style={{
+            height: 14,
+            borderRadius: 7,
+            backgroundColor: theme.colors.surfaceAlt,
+            width: i === lines - 1 ? '60%' : '100%',
+          }}
+        />
+      ))}
     </View>
-  </View>
-);
+  );
+};
+
+/**
+ * Лист подтверждения.
+ *
+ * Раньше «Удалить всё безвозвратно» и «Отправить сообщение мастеру?»
+ * получали одинаковое тёплое «Подтверждаю»: подтверждение — это модель
+ * безопасности продукта, и оно обязано нести сигнал о тяжести последствий.
+ *
+ * У опасного варианта отмена — визуально доминирующая, а подпись называет
+ * действие глаголом: «Подтверждаю» не значит одного и того же под фразой
+ * «восстановить будет нельзя».
+ */
+const confirmSheet: Renderer = ({ props, theme, fire }) => {
+  const danger = tone(props['tone']) === 'danger';
+  const confirmLabel = str(props['confirmLabel'], danger ? 'Удалить' : 'Подтверждаю');
+
+  return (
+    <View
+      accessibilityRole="alert"
+      style={{
+        borderRadius: theme.radius.lg,
+        borderWidth: 1,
+        borderColor: danger ? theme.colors.danger : theme.colors.border,
+        backgroundColor: theme.colors.surface,
+        padding: theme.spacing(4),
+        gap: theme.spacing(3),
+      }}
+    >
+      <View style={{ flexDirection: 'row', gap: theme.spacing(2.5), alignItems: 'flex-start' }}>
+        {danger ? (
+          <View style={{ paddingTop: 2 }}>
+            <Icon name="flag" size={18} color={theme.colors.danger} filled />
+          </View>
+        ) : null}
+        <RNText style={[textStyle(theme.font.body, theme.colors.text, { fontWeight: '600' }), { flex: 1 }]}>
+          {str(props['text'], 'Подтвердить действие?')}
+        </RNText>
+      </View>
+
+      {/* У опасного действия порядок обратный: безопасный выбор идёт первым. */}
+      <View style={{ flexDirection: danger ? 'column-reverse' : 'row', gap: theme.spacing(2) }}>
+        <Tap
+          onPress={() => fire('onConfirm')}
+          label={confirmLabel}
+          style={{
+            flex: danger ? undefined : 1,
+            backgroundColor: danger ? 'transparent' : theme.colors.accent,
+            borderWidth: danger ? 1 : 0,
+            borderColor: theme.colors.danger,
+            borderRadius: theme.radius.md,
+            paddingVertical: theme.spacing(3),
+            alignItems: 'center',
+          }}
+        >
+          <RNText style={textStyle(theme.font.body, danger ? theme.colors.danger : theme.colors.accentText, { fontWeight: '600' })}>
+            {confirmLabel}
+          </RNText>
+        </Tap>
+        <Tap
+          onPress={() => fire('onCancel')}
+          label={str(props['cancelLabel'], 'Отмена')}
+          style={{
+            flex: danger ? undefined : 1,
+            backgroundColor: danger ? theme.colors.accent : 'transparent',
+            borderWidth: danger ? 0 : 1,
+            borderColor: theme.colors.border,
+            borderRadius: theme.radius.md,
+            paddingVertical: theme.spacing(3),
+            alignItems: 'center',
+          }}
+        >
+          <RNText style={textStyle(theme.font.body, danger ? theme.colors.accentText : theme.colors.text, { fontWeight: '600' })}>
+            {str(props['cancelLabel'], 'Отмена')}
+          </RNText>
+        </Tap>
+      </View>
+    </View>
+  );
+};
 
 /* ----------------------------- составные --------------------------- */
 
@@ -958,18 +1308,21 @@ const comparisonTable: Renderer = ({ props, theme }) => {
             }}
           >
             <View style={{ flexDirection: 'row', alignItems: 'center', gap: theme.spacing(2) }}>
-              <RNText style={{ flex: 1, color: theme.colors.text, fontWeight: '700', fontSize: theme.font.body }}>{str(item.title)}</RNText>
+              <RNText style={[textStyle(theme.font.h3, theme.colors.text), { flex: 1 }]}>{str(item.title)}</RNText>
               {recommended ? (
-                <RNText style={{ color: theme.colors.success, fontSize: theme.font.small, fontWeight: '700' }}>рекомендую</RNText>
+                <View style={{ flexDirection: 'row', alignItems: 'center', gap: theme.spacing(1) }}>
+                  <Icon name="check" size={14} color={theme.colors.success} />
+                  <RNText style={textStyle(theme.font.micro, theme.colors.success, { fontWeight: '700' })}>рекомендую</RNText>
+                </View>
               ) : null}
             </View>
             {str(item.subtitle) ? (
-              <RNText style={{ color: theme.colors.textMuted, fontSize: theme.font.small }}>{str(item.subtitle)}</RNText>
+              <RNText style={textStyle(theme.font.small, theme.colors.textMuted)}>{str(item.subtitle)}</RNText>
             ) : null}
             {criteria.map((c, ci) => (
               <View key={ci} style={{ flexDirection: 'row', justifyContent: 'space-between', gap: theme.spacing(2) }}>
-                <RNText style={{ color: theme.colors.textMuted, fontSize: theme.font.small }}>{c}</RNText>
-                <RNText style={{ color: theme.colors.text, fontSize: theme.font.small, fontWeight: '600' }}>{str(values[ci])}</RNText>
+                <RNText style={[textStyle(theme.font.small, theme.colors.textMuted), { flex: 1 }]}>{c}</RNText>
+                <RNText style={[textStyle(theme.font.small, theme.colors.text, { fontWeight: '600' }), TABULAR]}>{str(values[ci])}</RNText>
               </View>
             ))}
           </View>
@@ -988,32 +1341,34 @@ const stepper: Renderer = ({ props, theme }) => {
       {steps.map((s, i) => {
         const status = str(s.status, 'pending');
         const color =
-          status === 'done' ? theme.colors.success : status === 'running' ? theme.colors.accent : status === 'failed' ? theme.colors.danger : theme.colors.border;
+          status === 'done' ? theme.colors.success
+          : status === 'running' ? theme.colors.accent
+          : status === 'failed' ? theme.colors.danger
+          : theme.colors.border;
         return (
-          <View key={i} style={{ flexDirection: 'row', alignItems: 'center', gap: theme.spacing(3) }}>
+          <View
+            key={i}
+            style={{ flexDirection: 'row', alignItems: 'center', gap: theme.spacing(3) }}
+            accessible
+            accessibilityLabel={`${str(s.title)}: ${status === 'done' ? 'готово' : status === 'failed' ? 'ошибка' : status === 'running' ? 'выполняется' : 'ожидает'}`}
+          >
             <View
               style={{
-                width: 24,
-                height: 24,
-                borderRadius: 12,
-                borderWidth: 2,
-                borderColor: color,
+                width: 26, height: 26, borderRadius: 13,
+                borderWidth: 2, borderColor: color,
                 backgroundColor: status === 'done' ? color : 'transparent',
-                alignItems: 'center',
-                justifyContent: 'center',
+                alignItems: 'center', justifyContent: 'center',
               }}
             >
-              <RNText style={{ fontSize: 11, color: status === 'done' ? theme.colors.surface : color, fontWeight: '800' }}>
-                {status === 'done' ? '✓' : status === 'failed' ? '!' : String(i + 1)}
-              </RNText>
+              {status === 'done' ? (
+                <Icon name="check" size={15} color={theme.colors.surface} />
+              ) : status === 'failed' ? (
+                <Icon name="close" size={14} color={color} />
+              ) : (
+                <RNText style={[textStyle(theme.font.micro, color, { fontWeight: '800' }), TABULAR]}>{i + 1}</RNText>
+              )}
             </View>
-            <RNText
-              style={{
-                flex: 1,
-                color: status === 'pending' ? theme.colors.textMuted : theme.colors.text,
-                fontSize: theme.font.body,
-              }}
-            >
+            <RNText style={[textStyle(theme.font.body, status === 'pending' ? theme.colors.textMuted : theme.colors.text), { flex: 1 }]}>
               {str(s.title)}
             </RNText>
           </View>
@@ -1036,6 +1391,7 @@ export const REGISTRY: Record<ComponentType, Renderer> = {
   button, buttonGroup, link,
   alert, emptyState, skeleton, confirmSheet,
   comparisonTable, stepper, form,
+  agentDid, agentIntent, awaiting, sourceStamp,
 };
 
 /**
@@ -1055,7 +1411,7 @@ export const Fallback: Renderer = ({ props, theme, children }) => (
       gap: theme.spacing(2),
     }}
   >
-    <RNText style={{ fontSize: theme.font.small, color: theme.colors.textMuted }}>
+    <RNText style={textStyle(theme.font.small, theme.colors.textMuted)}>
       {str(props['__fallbackLabel'], 'Этот блок появится после обновления приложения')}
     </RNText>
     {children}

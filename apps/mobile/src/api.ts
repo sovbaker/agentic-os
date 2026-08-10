@@ -133,6 +133,8 @@ export interface FeedCard {
   title: string;
   body: string;
   jobId: string | null;
+  /** Куда ведёт карточка. Без него лента — дайджест с фальшивой нажимаемостью. */
+  specId: string | null;
 }
 
 export async function fetchFeed(): Promise<{ greeting: string; cards: FeedCard[] }> {
@@ -144,7 +146,8 @@ export async function fetchFeed(): Promise<{ greeting: string; cards: FeedCard[]
 export interface Archetype {
   id: string;
   label: string;
-  glyph: string;
+  /** Имя из закрытого набора, а не эмодзи: рисунок живёт в бинаре. */
+  icon: string;
 }
 
 export async function fetchOnboarding(): Promise<{ archetypes: Archetype[]; inboxAddress: string }> {
@@ -167,6 +170,12 @@ export async function fetchLifeMap(): Promise<MiniAppResponse> {
   return (await res.json()) as MiniAppResponse;
 }
 
+export async function fetchMiniApp(id: string): Promise<MiniAppResponse> {
+  const res = await fetch(`${API_URL}/v1/miniapps/${encodeURIComponent(id)}`, { headers: headers() });
+  if (!res.ok) throw new Error(`Мини-аппа не загрузилась: ${res.status}`);
+  return (await res.json()) as MiniAppResponse;
+}
+
 export async function fetchPrivacy(): Promise<MiniAppResponse> {
   const res = await fetch(`${API_URL}/v1/privacy/screen`, { headers: headers() });
   if (!res.ok) throw new Error(`Экран приватности не загрузился: ${res.status}`);
@@ -179,10 +188,4 @@ export async function registerPushToken(token: string): Promise<void> {
     headers: headers(),
     body: JSON.stringify({ token }),
   });
-}
-
-export async function fetchMiniApp(id: string): Promise<MiniAppResponse> {
-  const res = await fetch(`${API_URL}/v1/miniapps/${id}`, { headers: headers() });
-  if (!res.ok) throw new Error(`Мини-аппа не загрузилась: ${res.status}`);
-  return (await res.json()) as MiniAppResponse;
 }

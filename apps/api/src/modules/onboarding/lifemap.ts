@@ -70,9 +70,11 @@ export async function buildLifeMap(userId: string): Promise<LifeMap> {
     items: facts.map((f) => ({
       id: f.fact_id,
       name: f.label,
-      // Предположения помечаем прямо в тексте: уверенная ошибка дороже
-      // признания незнания.
-      note: `${SOURCE_LABEL[f.source] ?? f.source}${f.confidence < 0.5 ? ', уточню' : ''}`,
+      // Источник и уверенность — два независимых канала, а не одна строка:
+      // «откуда» и «насколько» это разные вопросы, и модель различает семь
+      // источников и непрерывную уверенность.
+      source: SOURCE_LABEL[f.source] ?? f.source,
+      confidence: f.confidence,
     })),
   }));
 
@@ -87,23 +89,27 @@ export async function buildLifeMap(userId: string): Promise<LifeMap> {
           {
             type: 'text',
             props: {
-              text:
-                rows.length > 0
-                  ? 'Вот что я понял. Поправь, если что-то не так — я запомню.'
-                  : 'Пока пусто. Расскажи о задаче, и карта начнёт заполняться сама.',
+              text: 'Вот что я понял. Поправь, если что-то не так — я запомню.',
               tone: 'muted',
             },
           },
-          { type: 'row', props: { gap: 4 }, children: [
-            { type: 'stat', bind: { value: { source: 'data', path: 'factCount' } }, props: { label: 'Фактов' } },
-            { type: 'stat', bind: { value: { source: 'data', path: 'confirmedCount' } }, props: { label: 'Подтверждено' } },
-          ] },
+          /*
+           * Ни один компонент не печатает 0 крупным кеглем: на пустой карте
+           * счётчики скрыты целиком, иначе первое, что видит человек, —
+           * стена нулей, и это его же и характеризует.
+           */
+          { type: 'row', props: { gap: 4 },
+            visibleIf: { ref: { source: 'data', path: 'hasFacts' }, op: 'eq', value: true },
+            children: [
+              { type: 'stat', bind: { value: { source: 'data', path: 'factCount' } }, props: { label: 'Фактов' } },
+              { type: 'stat', bind: { value: { source: 'data', path: 'confirmedCount' } }, props: { label: 'Подтверждено' } },
+            ] },
         ],
       },
       {
         type: 'emptyState',
         visibleIf: { ref: { source: 'data', path: 'sections' }, op: 'empty' },
-        props: { glyph: '🗺', title: 'Карта пока пустая', text: 'Она наполняется по ходу дела, а не анкетой' },
+        props: { icon: 'star', title: 'Карта пока пустая', text: 'Она наполняется по ходу дела, а не анкетой' },
       },
       {
         type: 'stack',
@@ -119,10 +125,7 @@ export async function buildLifeMap(userId: string): Promise<LifeMap> {
                 children: [
                   {
                     type: 'listItem',
-                    bind: {
-                      title: { source: 'data', path: 'fact.name' },
-                      subtitle: { source: 'data', path: 'fact.note' },
-                    },
+                    bind: { title: { source: 'data', path: 'fact.name' } },
                     actions: {
                       // Один тап = подтверждённый факт с максимальной уверенностью.
                       onPress: {
@@ -131,6 +134,15 @@ export async function buildLifeMap(userId: string): Promise<LifeMap> {
                         args: { factId: { source: 'data', path: 'fact.id' } },
                         optimistic: true,
                       },
+                    },
+                  },
+                  {
+                    // Повтор уже объявлен на `list`: штамп живёт в той же
+                    // итерации, что и его факт, а не отдельным списком после.
+                    type: 'sourceStamp',
+                    bind: {
+                      source: { source: 'data', path: 'fact.source' },
+                      confidence: { source: 'data', path: 'fact.confidence' },
                     },
                   },
                 ],
@@ -158,6 +170,7 @@ export async function buildLifeMap(userId: string): Promise<LifeMap> {
       sections,
       factCount: rows.length,
       confirmedCount: rows.filter((r) => r.confidence >= 0.8).length,
+      hasFacts: rows.length > 0,
     },
   };
 }

@@ -111,6 +111,7 @@ export async function buildPrivacyScreen(userId: string): Promise<PrivacyScreen>
                 tool: 'privacy.delete',
                 args: {},
                 confirm: 'Удалить всё безвозвратно? Граф, задачи, журнал и переписку восстановить будет нельзя.',
+                /* Клиент отличит опасное по этому тексту и покажет другой лист. */
               },
             },
           },

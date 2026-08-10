@@ -300,7 +300,7 @@ export function createApp(): Hono {
     const user = c.get('user');
     const inboxKey = await ensureInboxKey(user.userId);
     return c.json({
-      archetypes: ARCHETYPES.map((a) => ({ id: a.id, label: a.label, glyph: a.glyph })),
+      archetypes: ARCHETYPES.map((a) => ({ id: a.id, label: a.label, icon: a.icon })),
       // Адрес для пересылки: подключение почты без единой верификации.
       inboxAddress: `u+${inboxKey}@${process.env['INBOUND_DOMAIN'] ?? 'in.localhost'}`,
     });

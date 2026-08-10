@@ -13,13 +13,14 @@ import {
 } from 'react-native';
 import { StatusBar } from 'expo-status-bar';
 import type { Job, UIAction, UISpec } from '@agentic-os/contracts';
-import { KITCHEN_SINK, Renderer, darkTheme, lightTheme } from '@agentic-os/ui-registry';
+import { Icon, KITCHEN_SINK, REGISTRY, Renderer, TARGET, Tap, darkTheme, lightTheme, textStyle } from '@agentic-os/ui-registry';
 import {
   applyArchetypes,
   dispatchAction,
   fetchFeed,
   fetchLifeMap,
   fetchOnboarding,
+  fetchMiniApp,
   fetchPrivacy,
   registerDevice,
   registerPushToken,
@@ -44,6 +45,8 @@ import { speech } from './src/speech/index';
 interface PendingConfirm {
   action: Extract<UIAction, { kind: 'tool' }>;
   text: string;
+  /** Необратимое отличается не только словами: у него другая геометрия. */
+  danger: boolean;
 }
 
 const EXAMPLES = [
@@ -51,6 +54,35 @@ const EXAMPLES = [
   'Хочу спланировать поездку в Грузию весной',
   'Нужно найти мастера по натяжным потолкам на кухню',
 ];
+
+
+/**
+ * Лист подтверждения оболочки.
+ *
+ * Раньше в продукте было два разных листа — этот и реестровый — с разной
+ * геометрией и одинаковым оранжевым «Подтверждаю» и на напоминание, и на
+ * необратимое удаление. Здесь рисует реестр: одно понятие — одна форма.
+ */
+function ConfirmSheet({
+  theme, text, danger, onConfirm, onCancel,
+}: {
+  theme: typeof lightTheme;
+  text: string;
+  danger: boolean;
+  onConfirm: () => void;
+  onCancel: () => void;
+}): React.JSX.Element {
+  const node = REGISTRY.confirmSheet({
+    props: danger
+      ? { text, tone: 'danger', confirmLabel: 'Да, удалить', cancelLabel: 'Оставить' }
+      : { text },
+    theme,
+    children: null,
+    fire: (name) => (name === 'onConfirm' ? onConfirm() : onCancel()),
+    hasAction: () => true,
+  });
+  return <>{node}</>;
+}
 
 export default function App(): React.JSX.Element {
   const scheme = useColorScheme();
@@ -73,7 +105,43 @@ export default function App(): React.JSX.Element {
   const [chosenArchetypes, setChosenArchetypes] = useState<string[]>([]);
   const [inboxAddress, setInboxAddress] = useState<string | null>(null);
 
+  /**
+   * Стек экранов.
+   *
+   * Раньше `setSpec(null)` существовал ровно в одном месте — внутри `submit()`, —
+   * поэтому каждый серверный экран был дверью в одну сторону: уйти можно было
+   * только набрав новую задачу, что уничтожало мини-аппу, в которой человек
+   * работал, и восстановить её было нечем. Возврат — не украшение, а условие
+   * того, что задачу вообще можно закрыть.
+   */
+  const [history, setHistory] = useState<Array<{ spec: UISpec; data: Record<string, unknown> }>>([]);
+
   const session = useRef<{ stop: () => void } | null>(null);
+
+  const openScreen = useCallback(
+    (next: UISpec, nextData: Record<string, unknown>) => {
+      setHistory((prev) => (spec ? [...prev, { spec, data }] : prev));
+      setSpec(next);
+      setData(nextData);
+      setState({});
+    },
+    [spec, data]
+  );
+
+  const goBack = useCallback(() => {
+    setHistory((prev) => {
+      const last = prev[prev.length - 1];
+      if (last) {
+        setSpec(last.spec);
+        setData(last.data);
+      } else {
+        setSpec(null);
+        setData({});
+      }
+      setState({});
+      return prev.slice(0, -1);
+    });
+  }, []);
 
   /**
    * Режим просмотра реестра: ?dev=registry в вебе. Нужен, чтобы снимать
@@ -134,6 +202,8 @@ export default function App(): React.JSX.Element {
     setBusy(true);
     setError(null);
     setInput('');
+    // Новая задача — новая ветка: прошлые экраны остаются достижимы возвратом.
+    setHistory((prev) => (spec ? [...prev, { spec, data }] : prev));
     setSpec(null);
     setData({});
     setState({});
@@ -166,13 +236,14 @@ export default function App(): React.JSX.Element {
         }
       });
       await promise;
-    } catch (err) {
-      setError((err as Error).message);
+    } catch {
+      // Пользователю не нужен текст исключения: ему нужно, что делать дальше.
+      setError('Связь с сервером прервалась. Задача не потеряна — попробуй ещё раз.');
     } finally {
       setBusy(false);
       setStatus(null);
     }
-  }, [busy]);
+  }, [busy, spec, data]);
 
   const runTool = useCallback(
     async (action: Extract<UIAction, { kind: 'tool' }>, confirmed: boolean) => {
@@ -184,17 +255,38 @@ export default function App(): React.JSX.Element {
         });
 
         if (res.needsConfirmation) {
-          setConfirm({ action, text: res.confirmationText ?? 'Подтвердить действие?' });
+          const text = res.confirmationText ?? 'Подтвердить действие?';
+          setConfirm({ action, text, danger: /удал|безвозвратн|нельзя восстанов/i.test(text) });
           return;
         }
         if (res.dataPatch) setData((prev) => ({ ...prev, ...res.dataPatch }));
         if (res.message) setStatus(res.message);
-        if (!res.ok && !res.message) setError('Действие не выполнено');
-      } catch (err) {
-        setError((err as Error).message);
+        if (!res.ok && !res.message) {
+          setError('Не получилось выполнить. Проверь связь и попробуй ещё раз.');
+        }
+      } catch {
+        setError('Не получилось выполнить. Проверь связь и попробуй ещё раз.');
       }
     },
     [spec?.id, job?.id]
+  );
+
+  /**
+   * Открыть сохранённую мини-аппу по идентификатору.
+   *
+   * То, чего не хватало ленте: карточка сообщала о деле, но не вела к нему,
+   * и вернуться к вчерашнему чек-листу можно было только перенабрав фразу.
+   */
+  const openMiniApp = useCallback(
+    async (id: string) => {
+      try {
+        const screen = await fetchMiniApp(id);
+        openScreen(screen.spec, screen.data);
+      } catch {
+        setError('Не удалось открыть — попробуй ещё раз.');
+      }
+    },
+    [openScreen]
   );
 
   const onAction = useCallback(
@@ -210,8 +302,14 @@ export default function App(): React.JSX.Element {
           setState((prev) => ({ ...prev, [action.path]: payload ?? action.value }));
           break;
         case 'navigate':
-          // Навигация появится вместе с лентой «Сегодня» в S3.
-          setStatus(`Переход: ${action.target}`);
+          // Возврат к ленте — это возврат, а не отдельный экран.
+          if (action.target === 'feed') {
+            setHistory([]);
+            setSpec(null);
+            setData({});
+          } else if (action.id) {
+            void openMiniApp(action.id);
+          }
           break;
         case 'handoff':
           void Linking.openURL(action.url).catch(() => {
@@ -220,7 +318,7 @@ export default function App(): React.JSX.Element {
           break;
       }
     },
-    [runTool]
+    [runTool, openMiniApp]
   );
 
   const toggleVoice = useCallback(async () => {
@@ -269,6 +367,26 @@ export default function App(): React.JSX.Element {
         style={{ flex: 1 }}
         behavior={Platform.OS === 'ios' ? 'padding' : undefined}
       >
+        {/*
+          Шапка. Заголовок объявлен на каждой спеке и раньше выбрасывался
+          рендерером — вместе с ним у продукта не было и места для возврата.
+        */}
+        {spec && !devRegistry ? (
+          <View style={styles.header}>
+            <Tap onPress={goBack} label="Назад" style={styles.headerBack}>
+              <Icon name="chevronLeft" size={22} color={theme.colors.text} />
+            </Tap>
+            {/*
+              Заголовок в шапке — указатель местоположения, а не второй
+              заголовок экрана: приглушённый и мелкий, чтобы не спорить
+              с крупным заголовком в содержании.
+            */}
+            <Text numberOfLines={1} style={[textStyle(theme.font.micro, theme.colors.textMuted), { flex: 1 }]}>
+              {spec.title}
+            </Text>
+          </View>
+        ) : null}
+
         <View style={{ flex: 1 }}>
           {devRegistry ? (
             <Renderer spec={KITCHEN_SINK} data={{}} state={{}} theme={theme} onAction={onAction} />
@@ -284,7 +402,7 @@ export default function App(): React.JSX.Element {
               chosenArchetypes={chosenArchetypes}
               inboxAddress={inboxAddress}
               onExample={(text) => void submit(text, 'text')}
-              onCard={(card) => setStatus(card.body)}
+              onCard={(card) => (card.specId ? void openMiniApp(card.specId) : setStatus(card.body))}
               onToggleArchetype={(id) => {
                 const next = chosenArchetypes.includes(id)
                   ? chosenArchetypes.filter((c) => c !== id)
@@ -294,50 +412,62 @@ export default function App(): React.JSX.Element {
               }}
               onOpenLifeMap={() => {
                 void fetchLifeMap()
-                  .then((map) => {
-                    setSpec(map.spec);
-                    setData(map.data);
-                  })
-                  .catch((err: unknown) => setError((err as Error).message));
+                  .then((map) => openScreen(map.spec, map.data))
+                  .catch(() => setError('Карта не загрузилась. Попробуй ещё раз.'));
               }}
               onOpenPrivacy={() => {
                 void fetchPrivacy()
-                  .then((screen) => {
-                    setSpec(screen.spec);
-                    setData(screen.data);
-                  })
-                  .catch((err: unknown) => setError((err as Error).message));
+                  .then((screen) => openScreen(screen.spec, screen.data))
+                  .catch(() => setError('Экран не загрузился. Попробуй ещё раз.'));
               }}
             />
           )}
         </View>
 
+        {/*
+          Значение не передаётся одним цветом: у ошибки есть знак и роль.
+          Скринридер раньше не объявлял ни успех, ни отказ — область живая.
+        */}
         {status || error ? (
-          <View style={[styles.banner, error ? styles.bannerError : null]}>
+          <View
+            style={[styles.banner, error ? styles.bannerError : null]}
+            accessibilityLiveRegion="polite"
+            accessibilityRole={error ? 'alert' : undefined}
+          >
             {busy && !error ? <ActivityIndicator size="small" color={theme.colors.textMuted} /> : null}
+            {error ? <Icon name="close" size={16} color={theme.colors.danger} /> : null}
             <Text style={[styles.bannerText, error ? { color: theme.colors.danger } : null]}>
               {error ?? status}
             </Text>
+            {error ? (
+              <Tap onPress={() => setError(null)} label="Закрыть сообщение" slop>
+                <Text style={textStyle(theme.font.micro, theme.colors.textMuted, { fontWeight: '700' })}>скрыть</Text>
+              </Tap>
+            ) : null}
           </View>
         ) : null}
 
+        {/*
+          Подтверждение — модальное, с затемнением.
+          Раньше лист висел строкой над композером, экран под ним оставался
+          живым, и второе действие молча перетирало ожидающее. Опасность
+          отличается не только словами: об этом знает реестр, а не оболочка,
+          поэтому лист здесь один и тот же, что на серверных экранах.
+        */}
         {confirm ? (
-          <View style={styles.confirm}>
-            <Text style={styles.confirmText}>{confirm.text}</Text>
-            <View style={{ flexDirection: 'row', gap: 8 }}>
-              <Pressable
-                style={[styles.confirmBtn, styles.confirmPrimary]}
-                onPress={() => {
+          <View style={styles.scrim}>
+            <View style={styles.sheet}>
+              <ConfirmSheet
+                theme={theme}
+                text={confirm.text}
+                danger={confirm.danger}
+                onConfirm={() => {
                   const pending = confirm;
                   setConfirm(null);
                   void runTool(pending.action, true);
                 }}
-              >
-                <Text style={{ color: theme.colors.accentText, fontWeight: '600' }}>Подтверждаю</Text>
-              </Pressable>
-              <Pressable style={styles.confirmBtn} onPress={() => setConfirm(null)}>
-                <Text style={{ color: theme.colors.text }}>Отмена</Text>
-              </Pressable>
+                onCancel={() => setConfirm(null)}
+              />
             </View>
           </View>
         ) : null}
@@ -348,25 +478,42 @@ export default function App(): React.JSX.Element {
             onChangeText={setInput}
             placeholder={listening ? 'Слушаю…' : 'Напиши задачу'}
             placeholderTextColor={theme.colors.textMuted}
+            accessibilityLabel="Что нужно сделать"
             style={styles.input}
             editable={!busy}
             onSubmitEditing={() => void submit(input, 'text')}
             returnKeyType="send"
           />
-          <Pressable
+          <Tap
             onPress={() => void toggleVoice()}
-            style={[styles.iconBtn, listening ? styles.iconBtnActive : null]}
-            accessibilityLabel="Голосовой ввод"
+            label={listening ? 'Остановить запись' : 'Голосовой ввод'}
+            style={{ ...styles.iconBtn, ...(listening ? styles.iconBtnActive : {}) }}
           >
-            <Text style={{ fontSize: 18 }}>{listening ? '⏹' : '🎙'}</Text>
-          </Pressable>
-          <Pressable
+            <Icon name={listening ? 'square' : 'mic'} size={20} color={listening ? theme.colors.danger : theme.colors.text} filled={listening} />
+          </Tap>
+          <Tap
             onPress={() => void submit(input, 'text')}
             disabled={busy || input.trim() === ''}
-            style={[styles.sendBtn, busy || input.trim() === '' ? { opacity: 0.4 } : null]}
+            label="Отправить"
+            /*
+              Выключенное состояние выражается заливкой контейнера, а не
+              прозрачностью содержимого. Прежние opacity 0.4 давали стрелке
+              контраст 1.98:1 — и это было состоянием по умолчанию на каждой
+              загрузке любого экрана.
+            */
+            style={{
+              ...styles.sendBtn,
+              backgroundColor: busy || input.trim() === '' ? theme.colors.surfaceAlt : theme.colors.accent,
+              borderWidth: busy || input.trim() === '' ? 1 : 0,
+              borderColor: theme.colors.border,
+            }}
           >
-            <Text style={{ color: theme.colors.accentText, fontWeight: '700' }}>→</Text>
-          </Pressable>
+            <Icon
+              name="arrowRight"
+              size={20}
+              color={busy || input.trim() === '' ? theme.colors.textMuted : theme.colors.accentText}
+            />
+          </Tap>
         </View>
       </KeyboardAvoidingView>
     </SafeAreaView>
@@ -376,30 +523,17 @@ export default function App(): React.JSX.Element {
 function makeStyles(theme: typeof lightTheme) {
   return {
     center: { flex: 1, alignItems: 'center', justifyContent: 'center' } as const,
-    empty: {
-      flex: 1,
-      justifyContent: 'center',
-      padding: theme.spacing(6),
-      gap: theme.spacing(3),
+    header: {
+      flexDirection: 'row',
+      alignItems: 'center',
+      gap: theme.spacing(1),
+      paddingHorizontal: theme.spacing(2),
+      paddingVertical: theme.spacing(1),
+      borderBottomWidth: 1,
+      borderBottomColor: theme.colors.border,
+      backgroundColor: theme.colors.bg,
     } as const,
-    emptyTitle: {
-      fontSize: theme.font.h1,
-      fontWeight: '700',
-      color: theme.colors.text,
-    } as const,
-    emptyHint: {
-      fontSize: theme.font.body,
-      color: theme.colors.textMuted,
-      lineHeight: theme.font.body * 1.45,
-    } as const,
-    example: {
-      borderWidth: 1,
-      borderColor: theme.colors.border,
-      backgroundColor: theme.colors.surface,
-      borderRadius: theme.radius.md,
-      padding: theme.spacing(3.5),
-    } as const,
-    exampleText: { color: theme.colors.text, fontSize: theme.font.small } as const,
+    headerBack: { width: TARGET, alignItems: 'center', justifyContent: 'center' } as const,
     banner: {
       flexDirection: 'row',
       alignItems: 'center',
@@ -408,25 +542,20 @@ function makeStyles(theme: typeof lightTheme) {
       paddingVertical: theme.spacing(2.5),
     } as const,
     bannerError: { backgroundColor: `${theme.colors.danger}12` } as const,
-    bannerText: { color: theme.colors.textMuted, fontSize: theme.font.small, flex: 1 } as const,
-    confirm: {
-      margin: theme.spacing(4),
-      padding: theme.spacing(4),
-      borderRadius: theme.radius.lg,
-      backgroundColor: theme.colors.surface,
-      borderWidth: 1,
-      borderColor: theme.colors.border,
-      gap: theme.spacing(3),
+    bannerText: {
+      color: theme.colors.textMuted,
+      fontSize: theme.font.small.size,
+      lineHeight: theme.font.small.lineHeight,
+      flex: 1,
     } as const,
-    confirmText: { color: theme.colors.text, fontSize: theme.font.body } as const,
-    confirmBtn: {
-      paddingVertical: theme.spacing(2.5),
-      paddingHorizontal: theme.spacing(4),
-      borderRadius: theme.radius.md,
-      borderWidth: 1,
-      borderColor: theme.colors.border,
+    /* Затемнение: экран под листом не должен принимать нажатия. */
+    scrim: {
+      position: 'absolute',
+      top: 0, bottom: 0, left: 0, right: 0,
+      backgroundColor: '#00000066',
+      justifyContent: 'flex-end',
     } as const,
-    confirmPrimary: { backgroundColor: theme.colors.accent, borderColor: theme.colors.accent } as const,
+    sheet: { padding: theme.spacing(4) } as const,
     composer: {
       flexDirection: 'row',
       alignItems: 'center',
@@ -438,6 +567,13 @@ function makeStyles(theme: typeof lightTheme) {
     } as const,
     input: {
       flex: 1,
+      /*
+        Без minWidth: 0 поле перестаёт сжиматься на 229 px, и строка
+        композера требует 357 px — на экране 320 px это 25 px переполнения
+        на КАЖДОМ экране, потому что композер постоянный.
+      */
+      minWidth: 0,
+      flexShrink: 1,
       backgroundColor: theme.colors.surfaceAlt,
       borderWidth: 1,
       borderColor: theme.colors.border,
@@ -445,11 +581,13 @@ function makeStyles(theme: typeof lightTheme) {
       paddingHorizontal: theme.spacing(3.5),
       paddingVertical: theme.spacing(3),
       color: theme.colors.text,
-      fontSize: theme.font.body,
+      fontSize: theme.font.body.size,
+      lineHeight: theme.font.body.lineHeight,
+      minHeight: TARGET,
     } as const,
     iconBtn: {
-      width: 44,
-      height: 44,
+      width: TARGET,
+      height: TARGET,
       borderRadius: theme.radius.md,
       alignItems: 'center',
       justifyContent: 'center',
@@ -458,8 +596,8 @@ function makeStyles(theme: typeof lightTheme) {
     } as const,
     iconBtnActive: { backgroundColor: `${theme.colors.danger}22`, borderColor: theme.colors.danger } as const,
     sendBtn: {
-      width: 44,
-      height: 44,
+      width: TARGET,
+      height: TARGET,
       borderRadius: theme.radius.md,
       alignItems: 'center',
       justifyContent: 'center',

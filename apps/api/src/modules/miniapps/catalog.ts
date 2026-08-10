@@ -35,6 +35,91 @@ function formatMonth(iso: string | undefined, locale: string): string | null {
   return new Intl.DateTimeFormat(locale, { month: 'long', year: 'numeric', timeZone: 'UTC' }).format(d);
 }
 
+
+/**
+ * Блок «что происходит по делу».
+ *
+ * То, чего в продукте не было вовсе: ход агента, объявленное намерение и
+ * ожидание третьей стороны. Без этих трёх строк экран описывает задачу,
+ * а не работу над ней, и отличить продукт от списка дел нечем.
+ *
+ * Данные приходят в рантайме от шагов задачи (`runtimeKeys`), поэтому блок
+ * целиком скрывается, когда ходов ещё нет: пустой раздел «что я сделал»
+ * хуже его отсутствия.
+ */
+function movesBlock(): UINode {
+  return node({
+    type: 'card',
+    visibleIf: { ref: { source: 'data', path: 'hasMoves' }, op: 'eq', value: true },
+    children: [
+      { type: 'heading', props: { text: 'Что происходит', level: 2 } },
+      {
+        type: 'stack',
+        props: { gap: 3 },
+        repeat: { ref: { source: 'data', path: 'awaitingMoves' }, as: 'm' },
+        children: [
+          {
+            type: 'awaiting',
+            bind: {
+              who: { source: 'data', path: 'm.who' },
+              since: { source: 'data', path: 'm.since' },
+              usually: { source: 'data', path: 'm.usually' },
+            },
+          },
+        ],
+      },
+      {
+        type: 'stack',
+        props: { gap: 3 },
+        repeat: { ref: { source: 'data', path: 'intentMoves' }, as: 'm' },
+        children: [
+          {
+            type: 'agentIntent',
+            bind: {
+              title: { source: 'data', path: 'm.title' },
+              before: { source: 'data', path: 'm.before' },
+              after: { source: 'data', path: 'm.after' },
+              discloses: { source: 'data', path: 'm.discloses' },
+            },
+            actions: {
+              onConfirm: {
+                kind: 'tool',
+                tool: 'task.confirm_move',
+                args: { moveId: { source: 'data', path: 'm.id' } },
+              },
+            },
+          },
+        ],
+      },
+      {
+        type: 'stack',
+        props: { gap: 3 },
+        repeat: { ref: { source: 'data', path: 'didMoves' }, as: 'm' },
+        children: [
+          {
+            type: 'agentDid',
+            bind: {
+              title: { source: 'data', path: 'm.title' },
+              at: { source: 'data', path: 'm.at' },
+              undoUntil: { source: 'data', path: 'm.undoUntil' },
+            },
+            actions: {
+              onUndo: {
+                kind: 'tool',
+                tool: 'task.undo_move',
+                args: { moveId: { source: 'data', path: 'm.id' } },
+              },
+            },
+          },
+        ],
+      },
+    ],
+  });
+}
+
+/** Ключи, которые блок ходов ждёт от задачи в рантайме. */
+const MOVE_KEYS = ['hasMoves', 'didMoves', 'intentMoves', 'awaitingMoves', 'reminderState', 'reminderDone'] as const;
+
 /* ------------------------------------------------------------------ */
 /* Документы и дедлайны                                                */
 /* ------------------------------------------------------------------ */
@@ -42,7 +127,7 @@ function formatMonth(iso: string | undefined, locale: string): string | null {
 const docsDeadline: CatalogEntry = {
   id: 'docs-deadline',
   families: ['documents'],
-  title: (p) => (p.params['country'] ? `Документы: ${p.params['country']}` : 'Документы и дедлайны'),
+  title: (p) => (p.params['country'] ? `Виза: ${p.params['country']}` : 'Документы и дедлайны'),
 
   data: (p) => {
     const country = p.params['country'];
@@ -70,12 +155,12 @@ const docsDeadline: CatalogEntry = {
       schemaVersion: '1.0',
       id: 'docs-deadline',
       version: 1,
-      title: country ? `Документы: ${country}` : 'Документы и дедлайны',
+      title: country ? `Виза: ${country}` : 'Документы и дедлайны',
       dataSources: [{ key: 'items', tool: 'docs.checklist', args: {}, deferred: false }],
-      meta: { origin: 'catalog', graphRefs: [], shareable: false, runtimeKeys: [] },
+      meta: { origin: 'catalog', graphRefs: [], shareable: false, runtimeKeys: [...MOVE_KEYS] },
       root: node({
         type: 'screen',
-        props: { title: country ? `Документы: ${country}` : 'Документы и дедлайны' },
+        props: { title: country ? `Виза: ${country}` : 'Документы и дедлайны' },
         children: [
           {
             type: 'section',
@@ -126,8 +211,14 @@ const docsDeadline: CatalogEntry = {
                 },
               },
               {
+                /*
+                 * Состояние приходит от сервера: иначе кнопка остаётся
+                 * активной после срабатывания и приглашает второе нажатие,
+                 * а закрытие дела выглядит строкой системного лога.
+                 */
                 type: 'button',
                 props: { label: 'Напомнить через 2 дня', variant: 'primary' },
+                bind: { state: { source: 'data', path: 'reminderState' }, doneLabel: { source: 'data', path: 'reminderDone' } },
                 actions: {
                   onPress: {
                     kind: 'tool',
@@ -138,6 +229,7 @@ const docsDeadline: CatalogEntry = {
               },
             ],
           },
+          movesBlock(),
         ],
       }),
     };
@@ -172,7 +264,7 @@ const trip: CatalogEntry = {
       version: 1,
       title: dest ? `Поездка: ${dest}` : 'Поездка',
       dataSources: [{ key: 'items', tool: 'trip.checklist', args: {}, deferred: false }],
-      meta: { origin: 'catalog', graphRefs: [], shareable: false, runtimeKeys: [] },
+      meta: { origin: 'catalog', graphRefs: [], shareable: false, runtimeKeys: [...MOVE_KEYS] },
       root: node({
         type: 'screen',
         props: { title: dest ? `Поездка: ${dest}` : 'Поездка' },
@@ -211,6 +303,7 @@ const trip: CatalogEntry = {
               },
             ],
           },
+          movesBlock(),
         ],
       }),
     };
@@ -241,7 +334,7 @@ const genericTask: CatalogEntry = {
     version: 1,
     title: p.goal.slice(0, 60),
     dataSources: [{ key: 'items', tool: 'task.checklist', args: {}, deferred: false }],
-    meta: { origin: 'catalog', graphRefs: [], shareable: false, runtimeKeys: [] },
+    meta: { origin: 'catalog', graphRefs: [], shareable: false, runtimeKeys: [...MOVE_KEYS] },
     root: node({
       type: 'screen',
       props: { title: 'Задача' },
@@ -289,11 +382,18 @@ const genericTask: CatalogEntry = {
               type: 'textField',
               props: { label: 'Ответ', placeholder: 'Напиши пару слов' },
               actions: {
-                onSubmit: { kind: 'setState', path: 'answer', value: '' },
+                /*
+                 * Раньше ответ уходил в клиентский мешок состояния, которого
+                 * никто не читал, а следующий ход его стирал: ассистент
+                 * задавал свой единственный уточняющий вопрос и выбрасывал
+                 * ответ. Теперь ответ продолжает задачу.
+                 */
+                onSubmit: { kind: 'tool', tool: 'task.answer', args: {} },
               },
             },
           ],
         },
+        movesBlock(),
       ],
     }),
   }),
@@ -325,7 +425,7 @@ const homeContractors: CatalogEntry = {
     version: 1,
     title: 'Подрядчики',
     dataSources: [{ key: 'items', tool: 'task.checklist', args: {}, deferred: false }],
-    meta: { origin: 'catalog', graphRefs: [], shareable: false, runtimeKeys: [] },
+    meta: { origin: 'catalog', graphRefs: [], shareable: false, runtimeKeys: [...MOVE_KEYS] },
     root: {
       type: 'screen',
       props: { title: 'Подрядчики' },
@@ -389,6 +489,7 @@ const homeContractors: CatalogEntry = {
             },
           ],
         },
+        movesBlock(),
       ],
     },
   }),
@@ -422,7 +523,7 @@ const healthAppointments: CatalogEntry = {
       { key: 'items', tool: 'task.checklist', args: {}, deferred: false },
       { key: 'events', tool: 'calendar.list_events', args: { fromDays: 0, toDays: 60 }, deferred: true },
     ],
-    meta: { origin: 'catalog', graphRefs: [], shareable: false, runtimeKeys: [] },
+    meta: { origin: 'catalog', graphRefs: [], shareable: false, runtimeKeys: [...MOVE_KEYS] },
     root: {
       type: 'screen',
       props: { title: 'Здоровье' },
@@ -468,6 +569,7 @@ const healthAppointments: CatalogEntry = {
             },
           ],
         },
+        movesBlock(),
       ],
     },
   }),

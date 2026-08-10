@@ -1,6 +1,7 @@
 import type { Job, JobStep } from '@agentic-os/contracts';
 import { log, traced } from '../../obs/log';
 import { TASK_BUDGET_RUB, withinTaskBudget } from '../billing/quota';
+import { computeMoves } from './moves';
 import { judge } from '../orchestrator/critic';
 import { quarantine } from '../orchestrator/quarantine';
 import { createLlm, type LlmPort } from '../orchestrator/llm';
@@ -424,6 +425,16 @@ export async function runJobToCompletion(jobId: string, maxTicks = 25): Promise<
     }
 
     await advanceJob(job, workerId);
+
+    /*
+     * Ходы публикуются после каждого прохода, а не в конце: смысл блока
+     * «что происходит» в том, чтобы человек видел работу по мере её хода,
+     * а не получил её списком, когда всё уже кончилось.
+     */
+    const moves = await computeMoves(jobId);
+    for (const [key, value] of Object.entries(moves)) {
+      publish(jobId, { type: 'data', key, value });
+    }
   }
   return getJob(jobId);
 }

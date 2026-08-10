@@ -210,16 +210,49 @@ export async function runFor(userId: string, now = new Date()): Promise<ScoredCa
 /** Лента «Сегодня»: то же содержимое, но без ограничений бюджета уведомлений. */
 export async function feed(userId: string, now = new Date()): Promise<{
   greeting: string;
-  cards: Array<{ id: string | null; kind: EventKind; title: string; body: string; jobId: string | null }>;
+  cards: Array<{
+    id: string | null;
+    kind: EventKind;
+    title: string;
+    body: string;
+    jobId: string | null;
+    /** Куда ведёт карточка: без этого лента — дайджест с фальшивой нажимаемостью. */
+    specId: string | null;
+  }>;
 }> {
   const candidates = await collectCandidates(userId, now);
   const hour = now.getHours();
   const greeting = hour < 5 ? 'Доброй ночи' : hour < 12 ? 'Доброе утро' : hour < 18 ? 'Добрый день' : 'Добрый вечер';
 
+  /*
+   * Карточка обязана вести к делу, а не сообщать о нём. Экран задачи —
+   * это результат шага `miniapp.compose`, и он уже сохранён; связать их
+   * стоит один запрос, а без этого лента остаётся дайджестом, из которого
+   * никуда нельзя нажать.
+   */
+  const jobIds = [...new Set(candidates.map((c) => c.jobId).filter((v): v is string => Boolean(v)))];
+  const specByJob = new Map<string, string>();
+  if (jobIds.length > 0) {
+    const rows = await query<{ job_id: string; spec_id: string | null }>(
+      `SELECT job_id, result->>'specId' AS spec_id
+         FROM job_step
+        WHERE job_id = ANY($1::uuid[]) AND tool = 'miniapp.compose' AND status = 'done'`,
+      [jobIds]
+    );
+    for (const r of rows) if (r.spec_id) specByJob.set(r.job_id, r.spec_id);
+  }
+
   return {
     greeting,
     cards: candidates
       .sort((a, b) => b.urgency - a.urgency)
-      .map((c) => ({ id: null, kind: c.kind, title: c.title, body: c.body, jobId: c.jobId ?? null })),
+      .map((c) => ({
+        id: null,
+        kind: c.kind,
+        title: c.title,
+        body: c.body,
+        jobId: c.jobId ?? null,
+        specId: c.jobId ? specByJob.get(c.jobId) ?? null : null,
+      })),
   };
 }

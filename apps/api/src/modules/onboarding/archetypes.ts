@@ -14,7 +14,11 @@ import { query } from '../../db/client';
 export interface Archetype {
   id: string;
   label: string;
-  glyph: string;
+  /**
+   * Имя иконки из закрытого набора реестра, а не эмодзи. Чужой цветной
+   * рисунок был самым громким и самым бессодержательным пикселем экрана.
+   */
+  icon: string;
   facts: ExtractedFact[];
 }
 
@@ -36,7 +40,7 @@ export const ARCHETYPES: readonly Archetype[] = [
   {
     id: 'parent',
     label: 'Родитель школьников',
-    glyph: '🎒',
+    icon: 'bag',
     facts: [
       prior('Учебный год', 'recurring', 'has_cycle', 'сентябрь–май'),
       prior('Медсправки для школы', 'document', 'renews_yearly'),
@@ -46,7 +50,7 @@ export const ARCHETYPES: readonly Archetype[] = [
   {
     id: 'traveler',
     label: 'Много летаю',
-    glyph: '✈️',
+    icon: 'plane',
     facts: [
       prior('Загранпаспорт', 'document', 'expires'),
       prior('Страховка путешественника', 'document', 'renews_per_trip'),
@@ -56,7 +60,7 @@ export const ARCHETYPES: readonly Archetype[] = [
   {
     id: 'renter',
     label: 'Снимаю квартиру',
-    glyph: '🏠',
+    icon: 'home',
     facts: [
       prior('Договор аренды', 'document', 'renews_yearly'),
       prior('Оплата аренды', 'recurring', 'monthly_payment'),
@@ -66,7 +70,7 @@ export const ARCHETYPES: readonly Archetype[] = [
   {
     id: 'driver',
     label: 'Есть машина',
-    glyph: '🚗',
+    icon: 'car',
     facts: [
       prior('ОСАГО', 'document', 'renews_yearly'),
       prior('Техосмотр', 'recurring', 'renews_yearly'),
@@ -76,7 +80,7 @@ export const ARCHETYPES: readonly Archetype[] = [
   {
     id: 'caregiver',
     label: 'Забочусь о родителях',
-    glyph: '💊',
+    icon: 'pill',
     facts: [
       prior('Плановые обследования', 'recurring', 'twice_a_year'),
       prior('Лекарства по рецепту', 'recurring', 'monthly'),
@@ -85,7 +89,7 @@ export const ARCHETYPES: readonly Archetype[] = [
   {
     id: 'freelancer',
     label: 'Работаю на себя',
-    glyph: '💼',
+    icon: 'doc',
     facts: [
       prior('Налоговая отчётность', 'recurring', 'quarterly'),
       prior('Счета клиентам', 'recurring', 'monthly'),

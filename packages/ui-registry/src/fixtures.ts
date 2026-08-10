@@ -41,7 +41,7 @@ export const KITCHEN_SINK: UISpec = {
         { type: 'markdown', props: { text: 'Абзац с **выделением**.\n\n- первый пункт\n- второй пункт' } },
         { type: 'row', children: [
           { type: 'avatar', props: { name: 'Олег Баранов' } },
-          { type: 'icon', props: { glyph: '🎯', size: 24 } },
+          { type: 'icon', props: { name: 'flag', size: 24 } },
           { type: 'link', props: { label: 'Ссылка на источник' } },
         ] },
         { type: 'divider' },
@@ -139,12 +139,46 @@ export const KITCHEN_SINK: UISpec = {
         { type: 'alert', props: { tone: 'warning', title: 'Правило', text: 'Аванс не больше 30 процентов.' } },
         { type: 'skeleton', props: { lines: 3 } },
         { type: 'confirmSheet', props: { text: 'Отправить сообщение мастеру?' } },
-        { type: 'emptyState', props: { glyph: '📭', title: 'Пока пусто', text: 'Здесь появятся результаты' } },
+        { type: 'confirmSheet', props: {
+          tone: 'danger',
+          text: 'Удалить всё безвозвратно? Граф, задачи и журнал восстановить будет нельзя.',
+          confirmLabel: 'Удалить всё',
+          cancelLabel: 'Оставить',
+        } },
+        { type: 'emptyState', props: { icon: 'doc', title: 'Пока пусто', text: 'Здесь появятся результаты' } },
         { type: 'spacer', props: { size: 2 } },
-        { type: 'grid', props: { columns: 2 }, children: [
+        // Зазор 4 намеренно: именно на нём сетка раньше схлопывалась в колонку.
+        { type: 'grid', props: { columns: 2, gap: 4 }, children: [
           { type: 'stat', props: { label: 'Слева', value: '1' } },
           { type: 'stat', props: { label: 'Справа', value: '2' } },
         ] },
+      ] },
+
+      /*
+       * Агентность. Единственная часть реестра, ради которой продукт
+       * существует: всё остальное умеет любой список дел.
+       */
+      { type: 'card', children: [
+        { type: 'heading', props: { text: 'Чей ход', level: 2 } },
+        { type: 'agentDid', props: {
+          title: 'Записал тебя на подачу документов',
+          at: 'вчера 14:20',
+          undoUntil: 'ещё 4 ч 12 мин',
+        }, actions: { onUndo: { kind: 'tool', tool: 'task.toggle_item', args: {} } } },
+        { type: 'agentIntent', props: {
+          title: 'Отправить анкету в визовый центр',
+          before: 'анкета не подана',
+          after: 'подана 24 июля',
+          discloses: 'анкета и скан паспорта',
+          confirmLabel: 'Подтверждаю',
+        }, actions: { onConfirm: { kind: 'tool', tool: 'task.toggle_item', args: {} } } },
+        { type: 'awaiting', props: {
+          who: 'визовый центр',
+          since: '3 августа',
+          usually: '5 дней',
+        }, actions: { onNudge: { kind: 'tool', tool: 'task.toggle_item', args: {} } } },
+        { type: 'sourceStamp', props: { source: 'с твоих слов', confidence: 0.9 } },
+        { type: 'sourceStamp', props: { source: 'предположение', confidence: 0.3 } },
       ] },
     ],
   },

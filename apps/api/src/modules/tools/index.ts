@@ -164,6 +164,11 @@ const scheduleReminder: Tool = {
     return {
       ok: true,
       message: `Напомню ${when.toLocaleDateString('ru-RU')}`,
+      // Кнопка узнаёт о результате из данных, а не из баннера над клавиатурой.
+      dataPatch: {
+        reminderState: 'done',
+        reminderDone: `Напомню ${when.toLocaleDateString('ru-RU')}`,
+      },
       audit: {
         humanReadable: `Поставил напоминание «${about}» на ${when.toLocaleDateString('ru-RU')}`,
         reason: 'шаг плана задачи',
@@ -564,6 +569,135 @@ const prepareHandoff: Tool = {
   },
 };
 
+
+
+/**
+ * Ответ на уточняющий вопрос.
+ *
+ * Значение приходит полезной нагрузкой экшена, а не аргументом: поле ввода
+ * знает свой текст, сервер знает, какой вопрос задавал.
+ */
+const answerQuestion: Tool = {
+  manifest: {
+    name: 'task.answer',
+    description: 'Ответить на уточняющий вопрос по задаче',
+    inputSchema: { text: 'string' },
+    permission: 'auto',
+    returnsUntrusted: false,
+    costHint: 'free',
+    timeoutMs: 5_000,
+    source: 'builtin',
+  },
+  async exec(ctx, args) {
+    const text = str(args['text']).trim();
+    if (!text || !ctx.jobId) return { ok: false, message: 'Нечего записывать' };
+
+    await query(
+      `UPDATE job SET status = 'running', pending_question = NULL, updated_at = now()
+        WHERE id = $1 AND user_id = $2`,
+      [ctx.jobId, ctx.userId]
+    );
+    await query(
+      `INSERT INTO episode (user_id, kind, payload, job_id) VALUES ($1, 'answer', $2::jsonb, $3)`,
+      [ctx.userId, JSON.stringify({ text }), ctx.jobId]
+    );
+
+    return {
+      ok: true,
+      message: 'Записал, продолжаю',
+      audit: {
+        humanReadable: `Записал твой ответ: «${text.slice(0, 60)}»`,
+        reason: 'ответ на уточняющий вопрос',
+        reversible: false,
+      },
+    };
+  },
+};
+
+/* ------------------------------------------------------------------ */
+/* Ходы                                                                */
+/* ------------------------------------------------------------------ */
+
+/**
+ * Подтвердить объявленное намерение.
+ *
+ * Потолок доверия MVP — «делает дела с подтверждением», и это его исполняющая
+ * часть: задача стояла в `waiting_user` и продолжается только отсюда.
+ */
+const confirmMove: Tool = {
+  manifest: {
+    name: 'task.confirm_move',
+    description: 'Подтвердить объявленное намерение агента',
+    inputSchema: { moveId: 'string' },
+    permission: 'auto',
+    returnsUntrusted: false,
+    costHint: 'free',
+    timeoutMs: 5_000,
+    source: 'builtin',
+  },
+  async exec(ctx, args) {
+    const jobId = str(args['moveId'], ctx.jobId ?? '');
+    if (!jobId) return { ok: false, message: 'Нечего подтверждать' };
+
+    const row = await queryOne<{ id: string }>(
+      `UPDATE job SET status = 'running', pending_question = NULL, updated_at = now()
+        WHERE id = $1 AND user_id = $2 AND status = 'waiting_user' RETURNING id`,
+      [jobId, ctx.userId]
+    );
+    if (!row) return { ok: false, message: 'Это уже подтверждено' };
+
+    return {
+      ok: true,
+      message: 'Понял, продолжаю',
+      audit: {
+        humanReadable: 'Продолжил задачу с твоего подтверждения',
+        reason: 'Пользователь подтвердил объявленное намерение',
+        reversible: false,
+      },
+    };
+  },
+};
+
+/** Отменить сделанное. Отменяет ровно тем, чем записано в журнале. */
+const undoMove: Tool = {
+  manifest: {
+    name: 'task.undo_move',
+    description: 'Отменить действие агента по записи журнала',
+    inputSchema: { moveId: 'string' },
+    permission: 'auto',
+    returnsUntrusted: false,
+    costHint: 'free',
+    timeoutMs: 15_000,
+    source: 'builtin',
+  },
+  async exec(ctx, args) {
+    const id = str(args['moveId']);
+    const row = await queryOne<{
+      compensation: { tool: string; args: Record<string, unknown>; specId?: string } | null;
+      reversible_until: Date | null;
+    }>(
+      `SELECT compensation, reversible_until FROM audit_log
+        WHERE id = $1 AND user_id = $2 AND reversed_at IS NULL`,
+      [id, ctx.userId]
+    );
+
+    if (!row?.compensation) return { ok: false, message: 'Это действие нельзя отменить' };
+    if (row.reversible_until && row.reversible_until.getTime() < Date.now()) {
+      return { ok: false, message: 'Срок отмены истёк' };
+    }
+
+    const outcome = await execTool(
+      row.compensation.tool,
+      { userId: ctx.userId, specId: row.compensation.specId, jobId: ctx.jobId, confirmed: true },
+      row.compensation.args
+    );
+    if (!outcome.ok) return { ok: false, message: 'Не получилось отменить' };
+
+    await query('UPDATE audit_log SET reversed_at = now() WHERE id = $1', [id]);
+    return { ok: true, message: 'Отменил', ...(outcome.dataPatch ? { dataPatch: outcome.dataPatch } : {}) };
+  },
+};
+
 /* ------------------------------------------------------------------ */
 /* Приватность                                                         */
 /* ------------------------------------------------------------------ */
@@ -633,6 +767,9 @@ const privacyDelete: Tool = {
 /* ------------------------------------------------------------------ */
 
 const TOOL_LIST: readonly Tool[] = [
+  answerQuestion,
+  confirmMove,
+  undoMove,
   privacyExport,
   privacyDelete,
   toggleItem,
@@ -711,8 +848,16 @@ export async function execTool(
 
   if (result.audit) {
     await query(
-      `INSERT INTO audit_log (user_id, job_id, action, human_readable, reason, permission, confirmed_by_user, reversible, compensation)
-       VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9)`,
+      /*
+       * Срок обратимости задаётся здесь, а не считается на экране: «отменить»
+       * без срока однажды окажется кнопкой, которая уже ничего не отменит.
+       * Шесть часов — столько, сколько человек реально возвращается к делу.
+       */
+      `INSERT INTO audit_log (user_id, job_id, action, human_readable, reason, permission, confirmed_by_user, reversible, compensation, reversible_until)
+       VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9::jsonb,
+               -- Тип параметра выводится по ПЕРВОМУ использованию, а внутри
+               -- CASE его вывести не из чего: приведение обязательно.
+               CASE WHEN $8::boolean AND $9::jsonb IS NOT NULL THEN now() + interval '6 hours' ELSE NULL END)`,
       [
         ctx.userId,
         ctx.jobId ?? null,
