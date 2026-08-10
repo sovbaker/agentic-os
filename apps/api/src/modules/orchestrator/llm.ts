@@ -336,9 +336,22 @@ export class AnthropicLlm implements LlmPort {
     private readonly fallback: LlmPort = new RuleLlm()
   ) {}
 
-  private async client() {
-    const { default: Anthropic } = await import('@anthropic-ai/sdk');
-    return new Anthropic({ apiKey: this.apiKey });
+  /**
+   * Клиент создаётся один раз на весь процесс.
+   *
+   * Раньше `new Anthropic(...)` выполнялся на каждый вызов, то есть
+   * каждый обращение к модели начиналось с нового TLS-рукопожатия до
+   * api.anthropic.com вместо переиспользования соединения. На задаче
+   * из четырёх-пяти вызовов это сотни миллисекунд, потраченных
+   * буквально ни на что.
+   */
+  private clientPromise: Promise<import('@anthropic-ai/sdk').default> | null = null;
+
+  private client(): Promise<import('@anthropic-ai/sdk').default> {
+    this.clientPromise ??= import('@anthropic-ai/sdk').then(
+      ({ default: Anthropic }) => new Anthropic({ apiKey: this.apiKey })
+    );
+    return this.clientPromise;
   }
 
   /**
@@ -489,8 +502,25 @@ export class AnthropicLlm implements LlmPort {
   }
 }
 
+/**
+ * Порт один на процесс.
+ *
+ * Пять модулей звали `createLlm()` на уровне модуля и получали пять
+ * независимых адаптеров — и пять одинаковых предупреждений в логе при
+ * старте. Предупреждение, напечатанное четыре раза подряд, читается
+ * как сбой, а не как настройка; но важнее другое: у адаптера появился
+ * переиспользуемый HTTP-клиент, и пять копий свели бы этот выигрыш к нулю.
+ */
+let port: LlmPort | null = null;
+
 export function createLlm(): LlmPort {
-  if (config.anthropicApiKey) return new AnthropicLlm(config.anthropicApiKey);
-  log.warn('ANTHROPIC_API_KEY не задан — оркестратор работает на детерминированном адаптере');
-  return new RuleLlm();
+  if (port) return port;
+
+  if (config.anthropicApiKey) {
+    port = new AnthropicLlm(config.anthropicApiKey);
+  } else {
+    log.warn('ANTHROPIC_API_KEY не задан — оркестратор работает на детерминированном адаптере');
+    port = new RuleLlm();
+  }
+  return port;
 }
